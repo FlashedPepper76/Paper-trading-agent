@@ -353,18 +353,22 @@ def _enforce_caps(decisions: list, context: dict) -> list:
                 d["cap_note"] = "max new buys per run reached"
             else:
                 price = watchlist.get(symbol, {}).get("last_close")
-                target_notional = equity * config.POSITION_SIZE_PCT
-                free_cash = cash * (1 - config.MIN_CASH_BUFFER_PCT)
-                if not price or target_notional > free_cash:
+                if not price:
                     d["allowed"] = False
-                    d["cap_note"] = "insufficient free cash after buffer"
+                    d["cap_note"] = "no price data available for this symbol this run"
                 else:
-                    qty = max(1, int(target_notional // price))
-                    d["qty"] = qty
-                    d["allowed"] = True
-                    open_count += 1
-                    new_buys += 1
-                    cash -= qty * price
+                    target_notional = equity * config.POSITION_SIZE_PCT
+                    free_cash = cash * (1 - config.MIN_CASH_BUFFER_PCT)
+                    if target_notional > free_cash:
+                        d["allowed"] = False
+                        d["cap_note"] = "insufficient free cash after buffer"
+                    else:
+                        qty = max(1, int(target_notional // price))
+                        d["qty"] = qty
+                        d["allowed"] = True
+                        open_count += 1
+                        new_buys += 1
+                        cash -= qty * price
         elif action == "hold":
             d["allowed"] = False
             d["cap_note"] = "hold (no action taken)"
@@ -471,6 +475,15 @@ def run():
     overall_reasoning = ""
     try:
         context = _build_context()
+        missing = [
+            s for s in config.UNIVERSE
+            if s not in context["held_positions"] and s not in context["watchlist"]
+        ]
+        print(
+            f"Context built: {len(context['watchlist'])} watchlist symbols, "
+            f"{len(context['held_positions'])} held."
+            + (f" No price data this run for: {', '.join(missing)}" if missing else "")
+        )
         news_context = _get_news_context()
         ai_response = _call_gemini(context, news_context)
         overall_reasoning = ai_response.get("overall_reasoning", "")
