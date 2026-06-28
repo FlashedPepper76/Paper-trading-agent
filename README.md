@@ -1,7 +1,7 @@
 # Paper Trading Agent
 
 An autonomous **AI-driven paper trading agent** for stocks and ETFs only,
-powered by Claude and run for free on GitHub Actions. It trades with
+powered by Gemini and run for free on GitHub Actions. It trades with
 simulated money — no real funds are ever at risk, and crypto is never
 touched by design.
 
@@ -14,7 +14,7 @@ touched by design.
    market is closed.
 3. **`ai_agent.py`** gathers account state, open positions, and recent
    price stats for the universe in `config.py`, sends that context plus
-   `instructions.md` to Claude, and asks for buy/sell/hold decisions with
+   `instructions.md` to Gemini, and asks for buy/sell/hold decisions with
    reasoning.
 4. **Hard risk caps in `config.py` are enforced in code** — the AI's
    judgment never overrides them. Max positions, max new buys per run,
@@ -51,8 +51,11 @@ Command Deck dashboard:
 Repo secrets required (**Settings → Secrets and variables → Actions**):
 
 - `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` — your Alpaca **paper** trading keys
-- `ANTHROPIC_API_KEY` — from console.anthropic.com (this is metered/billed
-  separately from any Claude.ai subscription)
+- `GEMINI_API_KEY` — from Google AI Studio (aistudio.google.com). Free tier
+  is plenty for this run frequency (~26 calls/day, well under free-tier
+  rate limits). One caveat: on the free tier, Google's terms allow your
+  prompts/responses to be used to improve their models. That's the
+  trade-off for $0 — fine for paper-trading test data, just worth knowing.
 - `SUPABASE_URL` / `SUPABASE_KEY` — already set, pointing at the
   life-dashboard project
 

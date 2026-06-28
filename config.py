@@ -13,7 +13,7 @@ UNIVERSE = [
 ]
 
 # --- AI agent settings ---
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
+GEMINI_MODEL = "gemini-2.5-flash"   # free-tier model, plenty for 1 call every 15 min
 LOOKBACK_DAYS = 30          # days of price history shown to the agent per symbol
 INSTRUCTIONS_FILE = "instructions.md"
 

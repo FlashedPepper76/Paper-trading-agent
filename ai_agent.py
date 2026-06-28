@@ -4,7 +4,7 @@ AI-driven trading agent.
 Each run:
   1. Gathers account state, open positions, and recent price stats for the
      universe in config.py.
-  2. Sends that context + instructions.md to Claude and asks for buy/sell/
+  2. Sends that context + instructions.md to Gemini and asks for buy/sell/
      hold decisions with reasoning, as JSON.
   3. Validates every decision against the hard risk caps in config.py —
      the AI's judgment never overrides these; they're enforced in code.
@@ -26,7 +26,7 @@ from alpaca.trading.enums import OrderSide
 import config
 import alpaca_client as ac
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
@@ -92,7 +92,7 @@ def _build_context():
 
 
 # --------------------------------------------------------------------------
-# Claude call
+# Gemini call
 # --------------------------------------------------------------------------
 
 def _load_instructions() -> str:
@@ -100,7 +100,7 @@ def _load_instructions() -> str:
         return f.read()
 
 
-def _call_claude(context: dict) -> dict:
+def _call_gemini(context: dict) -> dict:
     system_prompt = _load_instructions() + f"""
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
@@ -131,23 +131,22 @@ only required for buy/sell.
     )
 
     resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+        f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
+        params={"key": GEMINI_API_KEY},
+        headers={"content-type": "application/json"},
         json={
-            "model": config.ANTHROPIC_MODEL,
-            "max_tokens": 2000,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_message}],
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+            "generationConfig": {
+                "maxOutputTokens": 2000,
+                "responseMimeType": "application/json",
+            },
         },
         timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
-    text = "".join(block["text"] for block in data["content"] if block["type"] == "text")
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
     cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
     return json.loads(cleaned)
 
@@ -262,7 +261,7 @@ def _log_run(market_open: bool, context: dict | None, overall_reasoning: str, er
         "account_cash": context["account"]["cash"] if context else None,
         "num_open_positions": len(context["held_positions"]) if context else None,
         "overall_reasoning": overall_reasoning,
-        "model_used": config.ANTHROPIC_MODEL,
+        "model_used": config.GEMINI_MODEL,
         "error": error,
     }
     resp = requests.post(
@@ -309,7 +308,7 @@ def run():
     context = None
     try:
         context = _build_context()
-        ai_response = _call_claude(context)
+        ai_response = _call_gemini(context)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 

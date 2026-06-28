@@ -6,7 +6,7 @@ alpaca_client.py). Checks Alpaca's market clock first and exits
 immediately if the market is closed, which is what lets the GitHub Action
 run on a fixed cron schedule without manual weekend/holiday handling.
 
-Trading decisions are made by ai_agent.py (Claude), with hard risk caps
+Trading decisions are made by ai_agent.py (Gemini), with hard risk caps
 enforced in code regardless of what the AI decides — see config.py.
 """
 import alpaca_client as ac
