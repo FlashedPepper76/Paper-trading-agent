@@ -98,6 +98,26 @@ def _build_context():
 # --------------------------------------------------------------------------
 
 def _load_instructions() -> str:
+    """
+    Instructions now live in Supabase (agent_instructions table) so they can
+    be edited from the dashboard. Falls back to the local instructions.md
+    if the Supabase read fails for any reason, so a bad network blip never
+    takes the whole run down.
+    """
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/agent_instructions",
+            headers=_supabase_headers(),
+            params={"id": "eq.1", "select": "content"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if rows and rows[0].get("content"):
+            return rows[0]["content"]
+    except Exception as e:
+        print(f"Could not load instructions from Supabase ({e}), falling back to local file.")
+
     with open(config.INSTRUCTIONS_FILE, "r") as f:
         return f.read()
 
