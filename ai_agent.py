@@ -75,6 +75,7 @@ def _build_context():
             "avg_entry_price": round(float(pos.avg_entry_price), 2),
             "current_price": round(float(pos.current_price), 2),
             "unrealized_pl_pct": round(float(pos.unrealized_plpc) * 100, 2),
+            "market_value": round(float(pos.market_value), 2),
         }
 
     watchlist = {}
@@ -374,6 +375,7 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                     else:
                         qty = max(1, int(target_notional // price))
                         d["qty"] = qty
+                        d["entry_price"] = price
                         d["allowed"] = True
                         open_count += 1
                         new_buys += 1
@@ -477,6 +479,7 @@ def _log_decisions(run_id: int, decisions: list):
             "symbol": d.get("symbol"),
             "action": d.get("action"),
             "qty": d.get("qty"),
+            "entry_price": d.get("entry_price"),
             "confidence": d.get("confidence"),
             "reasoning": d.get("reasoning"),
             "order_id": d.get("order_id"),
@@ -493,6 +496,50 @@ def _log_decisions(run_id: int, decisions: list):
     resp.raise_for_status()
 
 
+def _log_positions(context: dict):
+    """
+    Replaces this agent's stored 'current positions' snapshot with what we
+    just observed from Alpaca (qty, avg entry price, current price, P/L%,
+    market value per symbol) — this is what powers the dashboard's
+    Positions view and the bought/current price shown per decision in the
+    log, without the dashboard ever needing to talk to Alpaca directly.
+
+    Wholesale delete-then-insert rather than upsert, since a closed
+    position needs to disappear from the snapshot too, not just have its
+    old row linger. Best-effort — never blocks a trading run.
+    """
+    try:
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
+            headers=_supabase_headers(),
+            params={"agent_id": f"eq.{config.AGENT_ID}"},
+            timeout=15,
+        ).raise_for_status()
+
+        held = context["held_positions"] if context else {}
+        if held:
+            rows = [
+                {
+                    "agent_id": config.AGENT_ID,
+                    "symbol": symbol,
+                    "qty": pos["qty"],
+                    "avg_entry_price": pos["avg_entry_price"],
+                    "current_price": pos["current_price"],
+                    "unrealized_pl_pct": pos["unrealized_pl_pct"],
+                    "market_value": pos["market_value"],
+                }
+                for symbol, pos in held.items()
+            ]
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
+                headers=_supabase_headers(),
+                json=rows,
+                timeout=30,
+            ).raise_for_status()
+    except Exception as e:
+        print(f"Could not update positions snapshot ({e}) — non-fatal.")
+
+
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
@@ -505,6 +552,7 @@ def run():
     try:
         market_open = ac.is_market_open()
         context = _build_context()
+        _log_positions(context)
         missing = [
             s for s in config.AGENT["universe"]
             if s not in context["held_positions"] and s not in context["watchlist"]
