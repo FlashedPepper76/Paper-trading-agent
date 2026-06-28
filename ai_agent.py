@@ -27,6 +27,8 @@ import config
 import alpaca_client as ac
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
+GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
@@ -130,25 +132,38 @@ only required for buy/sell.
         + json.dumps(context, indent=2)
     )
 
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
-        params={"key": GEMINI_API_KEY},
-        headers={"content-type": "application/json"},
-        json={
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-            "generationConfig": {
-                "maxOutputTokens": 2000,
-                "responseMimeType": "application/json",
-            },
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    return json.loads(cleaned)
+    last_error = None
+    for i, key in enumerate(GEMINI_KEYS):
+        try:
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
+                params={"key": key},
+                headers={"content-type": "application/json"},
+                json={
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": 2000,
+                        "responseMimeType": "application/json",
+                    },
+                },
+                timeout=60,
+            )
+            if resp.status_code == 429 and i < len(GEMINI_KEYS) - 1:
+                print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
+            return json.loads(cleaned)
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if i < len(GEMINI_KEYS) - 1:
+                print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
+                continue
+            raise
+    raise last_error or RuntimeError("No Gemini API keys configured")
 
 
 # --------------------------------------------------------------------------
