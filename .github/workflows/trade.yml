@@ -1,0 +1,30 @@
+name: Paper Trading Bot
+
+on:
+  schedule:
+    # Every 15 minutes, weekdays, 13:00-21:00 UTC.
+    # That window covers 9:30am-4:00pm ET with a buffer on both sides so it
+    # works across the EST/EDT switch without needing two separate cron
+    # entries. main.py double-checks Alpaca's market clock and exits
+    # immediately on weekends/holidays/outside actual market hours.
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run trading bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python main.py
