@@ -34,4 +34,5 @@ jobs:
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
         run: python main.py

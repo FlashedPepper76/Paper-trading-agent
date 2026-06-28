@@ -23,6 +23,12 @@ INSTRUCTIONS_FILE = "instructions.md"
 # market-moving news doesn't change minute to minute anyway.
 NEWS_REFRESH_MINUTES = 20
 
+# Push notifications (Argus dashboard) — fired on executed trades and on
+# run failures. The dashboard's /api/notify checks NOTIFY_SECRET (a GitHub
+# Actions secret here, hardcoded on the dashboard side since we don't have
+# Vercel env var access — see that repo's lib/push-server.ts for the caveat).
+NOTIFY_URL = "https://trading-agent-dashboard-mu.vercel.app/api/notify"
+
 # --- Risk guardrails (hard limits, enforced in code regardless of what the
 #     AI decides — this runs fully autonomously, so these caps matter) ---
 # Raised across the board (was 8 / 3 / 10% / 10%) to back up the

@@ -32,6 +32,7 @@ GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
 
 
 # --------------------------------------------------------------------------
@@ -417,6 +418,23 @@ def _supabase_headers():
     }
 
 
+def _notify(title: str, body: str):
+    """Pushes a notification to the Argus dashboard's subscribed devices.
+    Best-effort only — a notify failure (no NOTIFY_SECRET, dashboard down,
+    no subscribers yet, etc.) must never break or delay a trading run."""
+    if not NOTIFY_SECRET:
+        return
+    try:
+        requests.post(
+            config.NOTIFY_URL,
+            headers={"Content-Type": "application/json", "x-notify-key": NOTIFY_SECRET},
+            json={"title": title, "body": body},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Notify failed (non-fatal): {e}")
+
+
 def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
              error: str | None, news_context: str | None = None) -> int | None:
     payload = {
@@ -499,7 +517,13 @@ def run():
         for d in decisions:
             print(f"  {d['symbol']}: {d['action']} -> {d.get('order_status')} | {d.get('reasoning', '')}")
 
+        executed = [d for d in decisions if d.get("order_id")]
+        if executed:
+            summary = ", ".join(f"{d['action'].upper()} {d.get('qty')} {d['symbol']}" for d in executed)
+            _notify("Argus made a move", summary)
+
     except Exception as e:
         print(f"Agent run failed: {e}")
         _log_run(True, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
+        _notify("Argus run failed", str(e)[:200])
         raise
