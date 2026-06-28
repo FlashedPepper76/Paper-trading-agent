@@ -1,0 +1,45 @@
+name: Check Positions & Open Orders (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_id:
+        description: "Which agent's account to check"
+        required: true
+        default: "plutus"
+        type: choice
+        options:
+          - plutus
+          - helios
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check positions and open orders
+        env:
+          AGENT_ID: ${{ inputs.agent_id }}
+          ALPACA_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
+        run: PYTHONPATH=. python scripts/check_positions.py
+
+      - name: Commit result
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_positions_check.json
+          git commit -m "Positions/open-orders check: ${{ inputs.agent_id }}" || echo "no changes to commit"
+          git push
