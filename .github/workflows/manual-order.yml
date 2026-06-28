@@ -1,0 +1,43 @@
+name: Manual Test Order
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Ticker symbol (stocks/ETFs only)"
+        required: true
+        default: "AAPL"
+      side:
+        description: "buy or sell"
+        required: true
+        default: "buy"
+        type: choice
+        options:
+          - buy
+          - sell
+      qty:
+        description: "Number of shares"
+        required: true
+        default: "1"
+
+jobs:
+  order:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Place order
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SYMBOL: ${{ inputs.symbol }}
+          SIDE: ${{ inputs.side }}
+          QTY: ${{ inputs.qty }}
+        run: python scripts/manual_order.py
