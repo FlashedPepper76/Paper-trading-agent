@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "id": "96ed5519-759d-4fe7-bc77-3f7801236d5e",
+  "symbol": "AAPL",
+  "side": "OrderSide.SELL",
+  "qty": "1",
+  "status": "OrderStatus.ACCEPTED"
+}
