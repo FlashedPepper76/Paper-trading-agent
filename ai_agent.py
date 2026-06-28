@@ -305,7 +305,7 @@ only required for buy/sell.
         + news_block
     )
 
-    text = _gemini_generate(system_prompt, user_message, json_mode=True, max_output_tokens=2000)
+    text = _gemini_generate(system_prompt, user_message, json_mode=True, max_output_tokens=3500)
     cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
     return json.loads(cleaned)
 
