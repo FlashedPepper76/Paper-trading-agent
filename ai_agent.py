@@ -207,6 +207,9 @@ def _enforce_caps(decisions: list, context: dict) -> list:
                     open_count += 1
                     new_buys += 1
                     cash -= qty * price
+        elif action == "hold":
+            d["allowed"] = False
+            d["cap_note"] = "hold (no action taken)"
         else:
             d["allowed"] = False
             d["cap_note"] = f"unrecognized action '{action}'"
