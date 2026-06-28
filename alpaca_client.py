@@ -68,5 +68,15 @@ def submit_market_order(symbol: str, notional: float, side: OrderSide):
     return trading_client.submit_order(order)
 
 
+def submit_qty_order(symbol: str, qty: int, side: OrderSide):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=side,
+        time_in_force=TimeInForce.DAY,
+    )
+    return trading_client.submit_order(order)
+
+
 def close_position(symbol: str):
     return trading_client.close_position(symbol)
