@@ -350,6 +350,9 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                 d["cap_note"] = "no position held to sell"
             else:
                 d["allowed"] = True
+                pos = context["held_positions"][symbol]
+                d["exit_price"] = pos["current_price"]
+                d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
         elif action == "buy":
             if symbol in held:
                 d["allowed"] = False
@@ -486,6 +489,8 @@ def _log_decisions(run_id: int, decisions: list):
             "action": d.get("action"),
             "qty": d.get("qty"),
             "entry_price": d.get("entry_price"),
+            "exit_price": d.get("exit_price"),
+            "realized_pnl_pct": d.get("realized_pnl_pct"),
             "confidence": d.get("confidence"),
             "reasoning": d.get("reasoning"),
             "order_id": d.get("order_id"),

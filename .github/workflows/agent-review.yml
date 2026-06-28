@@ -1,0 +1,42 @@
+name: Weekly Agent Review
+
+on:
+  schedule:
+    - cron: "0 18 * * 0" # Sundays, 18:00 UTC — after market close, before next week
+  workflow_dispatch: {}
+
+jobs:
+  lessons-learned:
+    strategy:
+      matrix:
+        agent: [plutus, helios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Update lessons learned for ${{ matrix.agent }}
+        env:
+          AGENT_ID: ${{ matrix.agent }}
+          GEMINI_API_KEY: ${{ matrix.agent == 'plutus' && secrets.GEMINI_API_KEY || secrets.GEMINI_API_KEY_HELIOS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/lessons_learned.py
+
+  weekly-digest:
+    needs: lessons-learned
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Send weekly digest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
+        run: python scripts/weekly_digest.py
