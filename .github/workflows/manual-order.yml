@@ -34,6 +34,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Place order
+        id: place_order
+        continue-on-error: true
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -41,3 +43,16 @@ jobs:
           SIDE: ${{ inputs.side }}
           QTY: ${{ inputs.qty }}
         run: python scripts/manual_order.py
+
+      - name: Commit result
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_order_result.json
+          git commit -m "Manual order result: ${{ inputs.side }} ${{ inputs.qty }} ${{ inputs.symbol }}" || echo "no changes to commit"
+          git push
+
+      - name: Fail job if order failed
+        if: steps.place_order.outcome == 'failure'
+        run: exit 1

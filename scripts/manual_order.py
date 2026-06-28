@@ -4,8 +4,14 @@ autonomous strategy (see strategy.py for that). Triggered by the
 "Manual Test Order" GitHub Actions workflow (workflow_dispatch).
 
 Equities/ETFs only, Alpaca PAPER trading only (paper=True below).
+
+Writes the outcome (success or error) to last_order_result.json so it can
+be read back via the GitHub Contents API, since GitHub Actions' raw job
+logs aren't reachable from this assistant's sandbox.
 """
+import json
 import os
+import sys
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -26,9 +32,23 @@ order_request = MarketOrderRequest(
     time_in_force=TimeInForce.DAY,
 )
 
-result = trading_client.submit_order(order_request)
+try:
+    result = trading_client.submit_order(order_request)
+    output = {
+        "success": True,
+        "id": str(result.id),
+        "symbol": result.symbol,
+        "side": str(result.side),
+        "qty": str(result.qty),
+        "status": str(result.status),
+    }
+except Exception as e:
+    output = {"success": False, "symbol": SYMBOL, "side": SIDE, "qty": QTY, "error": str(e)}
 
-print(
-    f"Order submitted: id={result.id} symbol={result.symbol} "
-    f"side={result.side} qty={result.qty} status={result.status}"
-)
+with open("last_order_result.json", "w") as f:
+    json.dump(output, f, indent=2)
+
+print(json.dumps(output, indent=2))
+
+if not output["success"]:
+    sys.exit(1)
