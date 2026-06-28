@@ -33,6 +33,11 @@ GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
+# Set by every workflow as RUN_TRIGGER: ${{ github.event_name }} — "schedule"
+# for the cron jobs, "workflow_dispatch" for a manual/forced run. Lets the
+# dashboard show plainly whether a given run happened on its own or because
+# someone (Carter, or Claude during a chat) explicitly triggered it.
+RUN_TRIGGER = os.environ.get("RUN_TRIGGER", "unknown")
 
 
 # --------------------------------------------------------------------------
@@ -450,6 +455,7 @@ def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
              error: str | None, news_context: str | None = None) -> int | None:
     payload = {
         "agent_id": config.AGENT_ID,
+        "trigger": RUN_TRIGGER,
         "market_open": market_open,
         "account_equity": context["account"]["equity"] if context else None,
         "account_cash": context["account"]["cash"] if context else None,

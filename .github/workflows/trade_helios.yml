@@ -26,6 +26,7 @@ jobs:
       - name: Run trading bot (Helios)
         env:
           AGENT_ID: helios
+          RUN_TRIGGER: ${{ github.event_name }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HELIOS }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HELIOS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_HELIOS }}

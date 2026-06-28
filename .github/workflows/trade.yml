@@ -29,6 +29,7 @@ jobs:
       - name: Run trading bot
         env:
           AGENT_ID: plutus
+          RUN_TRIGGER: ${{ github.event_name }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
