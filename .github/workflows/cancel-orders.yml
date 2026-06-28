@@ -1,0 +1,54 @@
+name: Cancel Orders (cleanup only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_id:
+        description: "Which agent's account these orders belong to"
+        required: true
+        default: "plutus"
+        type: choice
+        options:
+          - plutus
+          - helios
+      order_ids:
+        description: "Comma-separated Alpaca order IDs to cancel"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cancel orders
+        id: cancel
+        continue-on-error: true
+        env:
+          ALPACA_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
+          ORDER_IDS: ${{ inputs.order_ids }}
+        run: python scripts/cancel_orders.py
+
+      - name: Commit result
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_cancel_result.json
+          git commit -m "Cancel orders result: ${{ inputs.agent_id }}" || echo "no changes to commit"
+          git push
+
+      - name: Fail job if any cancel failed
+        if: steps.cancel.outcome == 'failure'
+        run: exit 1
