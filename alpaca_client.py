@@ -16,6 +16,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 API_KEY = os.environ["ALPACA_API_KEY"]
 SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
@@ -40,11 +41,19 @@ def get_open_positions() -> dict:
 
 
 def get_recent_bars(symbols: list[str], lookback_days: int = 60) -> dict:
-    """Daily bars for a list of equity/ETF symbols (no crypto)."""
+    """
+    Daily bars for a list of equity/ETF symbols (no crypto).
+
+    Explicitly requests the SIP feed (full consolidated tape across all US
+    exchanges) rather than the IEX-only default. This is free on the Basic
+    plan as long as the data is more than 15 minutes old, which daily bars
+    always are by definition.
+    """
     request = StockBarsRequest(
         symbol_or_symbols=symbols,
         timeframe=TimeFrame.Day,
         limit=lookback_days,
+        feed=DataFeed.SIP,
     )
     return data_client.get_stock_bars(request).data
 
