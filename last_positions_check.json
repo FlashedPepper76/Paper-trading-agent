@@ -7,44 +7,12 @@
   "positions": [],
   "open_orders": [
     {
-      "id": "63305fa3-9fc7-4471-859b-dd85b74d14e5",
-      "symbol": "V",
-      "side": "OrderSide.BUY",
-      "qty": "44",
-      "status": "OrderStatus.ACCEPTED",
-      "submitted_at": "2026-06-28 15:33:31.329249+00:00"
-    },
-    {
-      "id": "6668dc84-309b-4f60-988e-86e2fa39a00f",
-      "symbol": "HD",
-      "side": "OrderSide.BUY",
-      "qty": "42",
-      "status": "OrderStatus.ACCEPTED",
-      "submitted_at": "2026-06-28 15:33:31.259103+00:00"
-    },
-    {
-      "id": "897fab02-a36a-4d14-a0d9-a262eb6a6d7e",
-      "symbol": "UNH",
-      "side": "OrderSide.BUY",
-      "qty": "35",
-      "status": "OrderStatus.ACCEPTED",
-      "submitted_at": "2026-06-28 15:33:31.186371+00:00"
-    },
-    {
       "id": "a9c4197c-cd82-494b-9f44-02134577940a",
       "symbol": "JNJ",
       "side": "OrderSide.BUY",
       "qty": "58",
       "status": "OrderStatus.ACCEPTED",
       "submitted_at": "2026-06-28 15:33:31.114967+00:00"
-    },
-    {
-      "id": "7c9b0117-6c38-4d18-8f34-1871d23e7616",
-      "symbol": "ABBV",
-      "side": "OrderSide.BUY",
-      "qty": "59",
-      "status": "OrderStatus.ACCEPTED",
-      "submitted_at": "2026-06-28 15:33:31.044017+00:00"
     },
     {
       "id": "4c902d33-e1a4-4c35-aee0-82d0577a9337",
