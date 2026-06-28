@@ -17,10 +17,21 @@ GEMINI_MODEL = "gemini-2.5-flash"   # free-tier model, plenty for 1 call every 1
 LOOKBACK_DAYS = 30          # days of price history shown to the agent per symbol
 INSTRUCTIONS_FILE = "instructions.md"
 
+# How long a researched news/politics/society briefing is reused before the
+# agent re-searches (cached in Supabase). The trade loop can run as often as
+# once a minute; re-searching every run would be wasteful and slow, and
+# market-moving news doesn't change minute to minute anyway.
+NEWS_REFRESH_MINUTES = 20
+
 # --- Risk guardrails (hard limits, enforced in code regardless of what the
 #     AI decides — this runs fully autonomously, so these caps matter) ---
-MAX_OPEN_POSITIONS = 8         # never hold more than this many positions at once
-MAX_NEW_BUYS_PER_RUN = 3       # don't open more than this many new positions per run
-POSITION_SIZE_PCT = 0.10       # fraction of account equity per new position
-MIN_CASH_BUFFER_PCT = 0.10     # always keep at least this fraction of equity as cash
+# Raised across the board (was 8 / 3 / 10% / 10%) to back up the
+# maximize-returns goal — paper money only, so more aggressive sizing is an
+# acceptable trade-off here. The cash-buffer check in ai_agent.py still
+# blocks any buy that would actually overcommit capital, so these are
+# ceilings, not guarantees every run hits them.
+MAX_OPEN_POSITIONS = 12        # never hold more than this many positions at once
+MAX_NEW_BUYS_PER_RUN = 5       # don't open more than this many new positions per run
+POSITION_SIZE_PCT = 0.15       # fraction of account equity per new position
+MIN_CASH_BUFFER_PCT = 0.05     # always keep at least this fraction of equity as cash
 

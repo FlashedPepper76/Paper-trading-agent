@@ -19,6 +19,7 @@ silent gaps in the log, and should never bypass the risk caps.
 import json
 import os
 import re
+from datetime import datetime, timezone
 
 import requests
 from alpaca.trading.enums import OrderSide
@@ -122,7 +123,149 @@ def _load_instructions() -> str:
         return f.read()
 
 
-def _call_gemini(context: dict) -> dict:
+def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
+                      json_mode=True, max_output_tokens=2000) -> str:
+    """
+    Shared Gemini call with key failover. Returns the raw text of the first
+    candidate's first part — callers decide whether/how to parse it.
+
+    Note: Gemini 2.5 models reject combining a tool (like google_search) with
+    responseMimeType="application/json" in the same call (400 INVALID_ARGUMENT,
+    "Function calling with a response mime type... is unsupported"). So
+    json_mode and tools are mutually exclusive here by construction — the news
+    research call uses tools with json_mode=False, the decision call uses
+    json_mode=True with no tools, and their outputs are stitched together by
+    the caller instead.
+    """
+    generation_config = {"maxOutputTokens": max_output_tokens}
+    if json_mode:
+        generation_config["responseMimeType"] = "application/json"
+
+    body = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "generationConfig": generation_config,
+    }
+    if tools:
+        body["tools"] = tools
+
+    last_error = None
+    for i, key in enumerate(GEMINI_KEYS):
+        try:
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
+                params={"key": key},
+                headers={"content-type": "application/json"},
+                json=body,
+                timeout=60,
+            )
+            if resp.status_code == 429 and i < len(GEMINI_KEYS) - 1:
+                print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if i < len(GEMINI_KEYS) - 1:
+                print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
+                continue
+            raise
+    raise last_error or RuntimeError("No Gemini API keys configured")
+
+
+# --------------------------------------------------------------------------
+# News / politics / society research (Google Search grounding, cached)
+# --------------------------------------------------------------------------
+
+def _research_news() -> str:
+    """One grounded Gemini call that researches what's currently moving (or
+    could move) markets: macro headlines, politics/policy, and broader
+    societal trends, plus anything specific to the trading universe."""
+    symbols = ", ".join(config.UNIVERSE)
+    system_prompt = (
+        "You are a markets research assistant. Use Google Search to find what is "
+        "actually relevant to trading decisions right now. Cover, briefly:\n"
+        "- Major market-wide headlines from the last 24-48 hours (Fed/rate "
+        "decisions, inflation or jobs data, other major economic releases)\n"
+        "- Political developments with plausible market impact: legislation, "
+        "elections, regulatory or policy actions, geopolitical events or "
+        "conflicts, trade policy\n"
+        "- Broader societal or cultural trends that could shift consumer "
+        "behavior, sentiment, or demand in specific sectors\n"
+        f"- Recent company-specific news for any of these tickers, if there is "
+        f"any: {symbols}\n\n"
+        "Stay strictly factual and neutral — describe events and their "
+        "plausible market relevance only. Never state your own political "
+        "opinion or take a side on a political issue. Write 200-300 words as "
+        "short plain-text bullet-style lines (no markdown headers, no asterisks). "
+        "If nothing notable turned up in a section, say so in one line."
+    )
+    text = _gemini_generate(
+        system_prompt,
+        "Research current market-relevant news, politics, and societal trends now.",
+        tools=[{"google_search": {}}],
+        json_mode=False,
+        max_output_tokens=700,
+    )
+    return text.strip()
+
+
+def _get_news_context() -> str | None:
+    """
+    Returns a cached news/politics/society briefing, refreshing it via
+    _research_news() if the cache is missing or older than
+    config.NEWS_REFRESH_MINUTES. Cached in Supabase (agent_news_context,
+    single row, id=1) so a 1-minute cron doesn't re-search every run.
+
+    Never blocks a trading run: any failure here falls back to the stale
+    cache, or None, rather than raising — a bad news search is not a reason
+    to skip a whole trade decision.
+    """
+    cached = None
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/agent_news_context",
+            headers=_supabase_headers(),
+            params={"id": "eq.1", "select": "content,updated_at"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if rows:
+            cached = rows[0]
+    except Exception as e:
+        print(f"Could not load cached news context from Supabase ({e}).")
+
+    if cached and cached.get("updated_at"):
+        try:
+            updated_at = datetime.fromisoformat(cached["updated_at"].replace("Z", "+00:00"))
+            age_minutes = (datetime.now(timezone.utc) - updated_at).total_seconds() / 60
+            if age_minutes < config.NEWS_REFRESH_MINUTES:
+                return cached.get("content")
+        except Exception as e:
+            print(f"Could not parse cached news context timestamp ({e}), refreshing.")
+
+    try:
+        fresh = _research_news()
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/agent_news_context",
+            headers=_supabase_headers(),
+            params={"id": "eq.1"},
+            json={"content": fresh, "updated_at": datetime.now(timezone.utc).isoformat()},
+            timeout=30,
+        ).raise_for_status()
+        return fresh
+    except Exception as e:
+        print(f"Could not refresh news context ({e}), falling back to stale cache if any.")
+        return cached.get("content") if cached else None
+
+
+# --------------------------------------------------------------------------
+# Decision call
+# --------------------------------------------------------------------------
+
+def _call_gemini(context: dict, news_context: str | None) -> dict:
     system_prompt = _load_instructions() + f"""
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
@@ -147,43 +290,24 @@ need to list every "hold" — omitting a symbol means hold/no action. qty is
 only required for buy/sell.
 """
 
+    news_block = (
+        "\n\n## Current news / politics / society context (researched via web "
+        f"search, refreshed at most every {config.NEWS_REFRESH_MINUTES} min — "
+        "may be incomplete or slightly stale)\n" + news_context
+        if news_context else
+        "\n\n## Current news / politics / society context\n"
+        "(unavailable this run — reason about price action alone)\n"
+    )
+
     user_message = (
         "Here is the current account state and market context for this run:\n\n"
         + json.dumps(context, indent=2)
+        + news_block
     )
 
-    last_error = None
-    for i, key in enumerate(GEMINI_KEYS):
-        try:
-            resp = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
-                params={"key": key},
-                headers={"content-type": "application/json"},
-                json={
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": 2000,
-                        "responseMimeType": "application/json",
-                    },
-                },
-                timeout=60,
-            )
-            if resp.status_code == 429 and i < len(GEMINI_KEYS) - 1:
-                print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
-            return json.loads(cleaned)
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            if i < len(GEMINI_KEYS) - 1:
-                print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
-                continue
-            raise
-    raise last_error or RuntimeError("No Gemini API keys configured")
+    text = _gemini_generate(system_prompt, user_message, json_mode=True, max_output_tokens=2000)
+    cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
+    return json.loads(cleaned)
 
 
 # --------------------------------------------------------------------------
@@ -289,7 +413,8 @@ def _supabase_headers():
     }
 
 
-def _log_run(market_open: bool, context: dict | None, overall_reasoning: str, error: str | None) -> int | None:
+def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
+             error: str | None, news_context: str | None = None) -> int | None:
     payload = {
         "market_open": market_open,
         "account_equity": context["account"]["equity"] if context else None,
@@ -298,6 +423,7 @@ def _log_run(market_open: bool, context: dict | None, overall_reasoning: str, er
         "overall_reasoning": overall_reasoning,
         "model_used": config.GEMINI_MODEL,
         "error": error,
+        "news_context": news_context,
     }
     resp = requests.post(
         f"{SUPABASE_URL}/rest/v1/trading_agent_runs",
@@ -341,16 +467,19 @@ def _log_decisions(run_id: int, decisions: list):
 
 def run():
     context = None
+    news_context = None
+    overall_reasoning = ""
     try:
         context = _build_context()
-        ai_response = _call_gemini(context)
+        news_context = _get_news_context()
+        ai_response = _call_gemini(context, news_context)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
         decisions = _enforce_caps(decisions, context)
         _execute(decisions)
 
-        run_id = _log_run(True, context, overall_reasoning, error=None)
+        run_id = _log_run(True, context, overall_reasoning, error=None, news_context=news_context)
         _log_decisions(run_id, decisions)
 
         print(f"Run complete. Reasoning: {overall_reasoning}")
@@ -359,5 +488,5 @@ def run():
 
     except Exception as e:
         print(f"Agent run failed: {e}")
-        _log_run(True, context, overall_reasoning="", error=str(e))
+        _log_run(True, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
         raise
