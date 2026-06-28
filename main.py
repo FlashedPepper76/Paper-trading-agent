@@ -11,9 +11,12 @@ enforced in code regardless of what the AI decides — see config.py.
 """
 import alpaca_client as ac
 import ai_agent
+import config
 
 
 def main():
+    print(f"Agent: {config.AGENT['label']} ({config.AGENT_ID})")
+
     if not ac.is_market_open():
         print("Market is closed. Exiting.")
         return

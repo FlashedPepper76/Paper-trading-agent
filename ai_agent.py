@@ -66,7 +66,7 @@ def _symbol_stats(symbol: str, bars) -> dict | None:
 def _build_context():
     account = ac.get_account()
     positions = ac.get_open_positions()
-    bars_by_symbol = ac.get_recent_bars(config.UNIVERSE, lookback_days=config.LOOKBACK_DAYS + 5)
+    bars_by_symbol = ac.get_recent_bars(config.AGENT["universe"], lookback_days=config.LOOKBACK_DAYS + 5)
 
     held = {}
     for symbol, pos in positions.items():
@@ -78,7 +78,7 @@ def _build_context():
         }
 
     watchlist = {}
-    for symbol in config.UNIVERSE:
+    for symbol in config.AGENT["universe"]:
         if symbol in held:
             continue
         stats = _symbol_stats(symbol, bars_by_symbol.get(symbol))
@@ -101,16 +101,16 @@ def _build_context():
 
 def _load_instructions() -> str:
     """
-    Instructions now live in Supabase (agent_instructions table) so they can
-    be edited from the dashboard. Falls back to the local instructions.md
-    if the Supabase read fails for any reason, so a bad network blip never
-    takes the whole run down.
+    Instructions live in Supabase (agent_instructions table, keyed by
+    agent_id) so they can be edited from the dashboard per-agent. Falls
+    back to the active agent's local instructions file if the Supabase read
+    fails for any reason, so a bad network blip never takes the run down.
     """
     try:
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/agent_instructions",
             headers=_supabase_headers(),
-            params={"id": "eq.1", "select": "content"},
+            params={"agent_id": f"eq.{config.AGENT_ID}", "select": "content"},
             timeout=15,
         )
         resp.raise_for_status()
@@ -120,7 +120,7 @@ def _load_instructions() -> str:
     except Exception as e:
         print(f"Could not load instructions from Supabase ({e}), falling back to local file.")
 
-    with open(config.INSTRUCTIONS_FILE, "r") as f:
+    with open(config.AGENT["instructions_file"], "r") as f:
         return f.read()
 
 
@@ -154,7 +154,7 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
     for i, key in enumerate(GEMINI_KEYS):
         try:
             resp = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{config.AGENT['gemini_model']}:generateContent",
                 params={"key": key},
                 headers={"content-type": "application/json"},
                 json=body,
@@ -183,7 +183,7 @@ def _research_news() -> str:
     """One grounded Gemini call that researches what's currently moving (or
     could move) markets: macro headlines, politics/policy, and broader
     societal trends, plus anything specific to the trading universe."""
-    symbols = ", ".join(config.UNIVERSE)
+    symbols = ", ".join(config.AGENT["universe"])
     system_prompt = (
         "You are a markets research assistant. Use Google Search to find what is "
         "actually relevant to trading decisions right now. Cover, briefly:\n"
@@ -215,9 +215,10 @@ def _research_news() -> str:
 def _get_news_context() -> str | None:
     """
     Returns a cached news/politics/society briefing, refreshing it via
-    _research_news() if the cache is missing or older than
-    config.NEWS_REFRESH_MINUTES. Cached in Supabase (agent_news_context,
-    single row, id=1) so a 1-minute cron doesn't re-search every run.
+    _research_news() if the cache is missing or older than this agent's
+    news_refresh_minutes setting. Cached in Supabase (agent_news_context,
+    one row per agent_id) so a fast cron doesn't re-search every run, and so
+    each agent's refresh cadence doesn't collide with the other's.
 
     Never blocks a trading run: any failure here falls back to the stale
     cache, or None, rather than raising — a bad news search is not a reason
@@ -228,7 +229,7 @@ def _get_news_context() -> str | None:
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/agent_news_context",
             headers=_supabase_headers(),
-            params={"id": "eq.1", "select": "content,updated_at"},
+            params={"agent_id": f"eq.{config.AGENT_ID}", "select": "content,updated_at"},
             timeout=15,
         )
         resp.raise_for_status()
@@ -242,7 +243,7 @@ def _get_news_context() -> str | None:
         try:
             updated_at = datetime.fromisoformat(cached["updated_at"].replace("Z", "+00:00"))
             age_minutes = (datetime.now(timezone.utc) - updated_at).total_seconds() / 60
-            if age_minutes < config.NEWS_REFRESH_MINUTES:
+            if age_minutes < config.AGENT["news_refresh_minutes"]:
                 return cached.get("content")
         except Exception as e:
             print(f"Could not parse cached news context timestamp ({e}), refreshing.")
@@ -252,7 +253,7 @@ def _get_news_context() -> str | None:
         requests.patch(
             f"{SUPABASE_URL}/rest/v1/agent_news_context",
             headers=_supabase_headers(),
-            params={"id": "eq.1"},
+            params={"agent_id": f"eq.{config.AGENT_ID}"},
             json={"content": fresh, "updated_at": datetime.now(timezone.utc).isoformat()},
             timeout=30,
         ).raise_for_status()
@@ -270,10 +271,10 @@ def _call_gemini(context: dict, news_context: str | None) -> dict:
     system_prompt = _load_instructions() + f"""
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
-- Max open positions at once: {config.MAX_OPEN_POSITIONS}
-- Max new positions opened per run: {config.MAX_NEW_BUYS_PER_RUN}
-- Position size target: {config.POSITION_SIZE_PCT * 100:.0f}% of equity
-- Minimum cash buffer: {config.MIN_CASH_BUFFER_PCT * 100:.0f}% of equity
+- Max open positions at once: {config.AGENT['max_open_positions']}
+- Max new positions opened per run: {config.AGENT['max_new_buys_per_run']}
+- Position size target: {config.AGENT['position_size_pct'] * 100:.0f}% of equity
+- Minimum cash buffer: {config.AGENT['min_cash_buffer_pct'] * 100:.0f}% of equity
 
 ## Output format
 Respond with ONLY valid JSON, no markdown fences, no other text, matching
@@ -293,7 +294,7 @@ only required for buy/sell.
 
     news_block = (
         "\n\n## Current news / politics / society context (researched via web "
-        f"search, refreshed at most every {config.NEWS_REFRESH_MINUTES} min — "
+        f"search, refreshed at most every {config.AGENT['news_refresh_minutes']} min — "
         "may be incomplete or slightly stale)\n" + news_context
         if news_context else
         "\n\n## Current news / politics / society context\n"
@@ -333,7 +334,7 @@ def _enforce_caps(decisions: list, context: dict) -> list:
         d["symbol"] = symbol
         d["action"] = action
 
-        if symbol not in config.UNIVERSE:
+        if symbol not in config.AGENT["universe"]:
             d["allowed"] = False
             d["cap_note"] = "symbol not in approved universe"
         elif action == "sell":
@@ -346,10 +347,10 @@ def _enforce_caps(decisions: list, context: dict) -> list:
             if symbol in held:
                 d["allowed"] = False
                 d["cap_note"] = "already held, ignoring duplicate buy"
-            elif open_count >= config.MAX_OPEN_POSITIONS:
+            elif open_count >= config.AGENT["max_open_positions"]:
                 d["allowed"] = False
                 d["cap_note"] = "max open positions reached"
-            elif new_buys >= config.MAX_NEW_BUYS_PER_RUN:
+            elif new_buys >= config.AGENT["max_new_buys_per_run"]:
                 d["allowed"] = False
                 d["cap_note"] = "max new buys per run reached"
             else:
@@ -358,8 +359,8 @@ def _enforce_caps(decisions: list, context: dict) -> list:
                     d["allowed"] = False
                     d["cap_note"] = "no price data available for this symbol this run"
                 else:
-                    target_notional = equity * config.POSITION_SIZE_PCT
-                    free_cash = cash * (1 - config.MIN_CASH_BUFFER_PCT)
+                    target_notional = equity * config.AGENT["position_size_pct"]
+                    free_cash = cash * (1 - config.AGENT["min_cash_buffer_pct"])
                     if target_notional > free_cash:
                         d["allowed"] = False
                         d["cap_note"] = "insufficient free cash after buffer"
@@ -419,7 +420,7 @@ def _supabase_headers():
 
 
 def _notify(title: str, body: str):
-    """Pushes a notification to the Plutus dashboard's subscribed devices.
+    """Pushes a notification to the dashboard's subscribed devices.
     Best-effort only — a notify failure (no NOTIFY_SECRET, dashboard down,
     no subscribers yet, etc.) must never break or delay a trading run."""
     if not NOTIFY_SECRET:
@@ -428,7 +429,7 @@ def _notify(title: str, body: str):
         requests.post(
             config.NOTIFY_URL,
             headers={"Content-Type": "application/json", "x-notify-key": NOTIFY_SECRET},
-            json={"title": title, "body": body},
+            json={"title": f"{config.AGENT['label']}: {title}", "body": body, "agent_id": config.AGENT_ID},
             timeout=10,
         )
     except Exception as e:
@@ -438,12 +439,13 @@ def _notify(title: str, body: str):
 def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
              error: str | None, news_context: str | None = None) -> int | None:
     payload = {
+        "agent_id": config.AGENT_ID,
         "market_open": market_open,
         "account_equity": context["account"]["equity"] if context else None,
         "account_cash": context["account"]["cash"] if context else None,
         "num_open_positions": len(context["held_positions"]) if context else None,
         "overall_reasoning": overall_reasoning,
-        "model_used": config.GEMINI_MODEL,
+        "model_used": config.AGENT["gemini_model"],
         "error": error,
         "news_context": news_context,
     }
@@ -494,7 +496,7 @@ def run():
     try:
         context = _build_context()
         missing = [
-            s for s in config.UNIVERSE
+            s for s in config.AGENT["universe"]
             if s not in context["held_positions"] and s not in context["watchlist"]
         ]
         print(
@@ -520,10 +522,10 @@ def run():
         executed = [d for d in decisions if d.get("order_id")]
         if executed:
             summary = ", ".join(f"{d['action'].upper()} {d.get('qty')} {d['symbol']}" for d in executed)
-            _notify("Plutus made a move", summary)
+            _notify("made a move", summary)
 
     except Exception as e:
         print(f"Agent run failed: {e}")
         _log_run(True, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
-        _notify("Plutus run failed", str(e)[:200])
+        _notify("run failed", str(e)[:200])
         raise

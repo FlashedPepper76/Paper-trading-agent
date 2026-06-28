@@ -1,0 +1,35 @@
+name: Helios Trading Bot (long-horizon / capital preservation)
+
+on:
+  schedule:
+    # Once a day, weekdays, shortly after the open — Helios is the
+    # long-horizon counterpart to Plutus, so it deliberately doesn't need
+    # (or want) a tight cadence. 13:35 UTC = 9:35am ET, a few minutes after
+    # the open settles down. Covers the EST/EDT switch the same way trade.yml
+    # does, with a comment rather than two separate cron entries.
+    - cron: "35 13 * * 1-5"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run trading bot (Helios)
+        env:
+          AGENT_ID: helios
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HELIOS }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HELIOS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_HELIOS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
+        run: python main.py

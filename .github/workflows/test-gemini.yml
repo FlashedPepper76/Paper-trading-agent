@@ -1,7 +1,16 @@
 name: Test Gemini Connectivity
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      agent_id:
+        description: "Which agent's Gemini key to test"
+        required: true
+        default: "plutus"
+        type: choice
+        options:
+          - plutus
+          - helios
 
 permissions:
   contents: write
@@ -23,9 +32,10 @@ jobs:
         id: test_call
         continue-on-error: true
         env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGENT_ID: ${{ inputs.agent_id }}
+          ALPACA_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS || secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
