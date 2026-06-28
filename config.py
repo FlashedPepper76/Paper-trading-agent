@@ -23,7 +23,7 @@ INSTRUCTIONS_FILE = "instructions.md"
 # market-moving news doesn't change minute to minute anyway.
 NEWS_REFRESH_MINUTES = 20
 
-# Push notifications (Argus dashboard) — fired on executed trades and on
+# Push notifications (Plutus dashboard) — fired on executed trades and on
 # run failures. The dashboard's /api/notify checks NOTIFY_SECRET (a GitHub
 # Actions secret here, hardcoded on the dashboard side since we don't have
 # Vercel env var access — see that repo's lib/push-server.ts for the caveat).

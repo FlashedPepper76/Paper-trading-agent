@@ -419,7 +419,7 @@ def _supabase_headers():
 
 
 def _notify(title: str, body: str):
-    """Pushes a notification to the Argus dashboard's subscribed devices.
+    """Pushes a notification to the Plutus dashboard's subscribed devices.
     Best-effort only — a notify failure (no NOTIFY_SECRET, dashboard down,
     no subscribers yet, etc.) must never break or delay a trading run."""
     if not NOTIFY_SECRET:
@@ -520,10 +520,10 @@ def run():
         executed = [d for d in decisions if d.get("order_id")]
         if executed:
             summary = ", ".join(f"{d['action'].upper()} {d.get('qty')} {d['symbol']}" for d in executed)
-            _notify("Argus made a move", summary)
+            _notify("Plutus made a move", summary)
 
     except Exception as e:
         print(f"Agent run failed: {e}")
         _log_run(True, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
-        _notify("Argus run failed", str(e)[:200])
+        _notify("Plutus run failed", str(e)[:200])
         raise

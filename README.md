@@ -28,7 +28,7 @@ touched by design.
    your window into what the agent decided and why.
 6. **`alpaca_client.py`** is the only file that talks to Alpaca, pinned to
    `paper=True` so it can never place a live order.
-7. **Executed trades and run failures push a notification** to the Argus
+7. **Executed trades and run failures push a notification** to the Plutus
    dashboard (trading-agent-dashboard repo) — enable alerts from the bell in
    its nav once it's added to your home screen.
 
