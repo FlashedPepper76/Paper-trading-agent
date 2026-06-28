@@ -9,6 +9,7 @@ This module is hard-restricted to equities/ETFs:
   endpoints.
 """
 import os
+from datetime import datetime, timedelta, timezone
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -44,15 +45,23 @@ def get_recent_bars(symbols: list[str], lookback_days: int = 60) -> dict:
     """
     Daily bars for a list of equity/ETF symbols (no crypto).
 
+    Uses an explicit start/end date range. Confirmed via direct testing that
+    Alpaca's bars endpoint returns nothing at all for multi-symbol requests
+    when only `limit` is given (regardless of feed) — a date range is
+    required to actually get data back.
+
     Explicitly requests the SIP feed (full consolidated tape across all US
     exchanges) rather than the IEX-only default. This is free on the Basic
     plan as long as the data is more than 15 minutes old, which daily bars
     always are by definition.
     """
+    end = datetime.now(timezone.utc) - timedelta(days=1)
+    start = end - timedelta(days=lookback_days * 2)  # generous buffer for weekends/holidays
     request = StockBarsRequest(
         symbol_or_symbols=symbols,
         timeframe=TimeFrame.Day,
-        limit=lookback_days,
+        start=start,
+        end=end,
         feed=DataFeed.SIP,
     )
     return data_client.get_stock_bars(request).data
