@@ -12,8 +12,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -39,6 +39,19 @@ def get_account():
 def get_open_positions() -> dict:
     """Returns {symbol: position} for all currently held positions."""
     return {p.symbol: p for p in trading_client.get_all_positions()}
+
+
+def get_pending_buy_symbols() -> set:
+    """
+    Symbols with a still-open (unfilled) buy order. A symbol can have a
+    pending order without yet showing up in get_open_positions() — e.g. an
+    order submitted while the market is technically open per the clock but
+    not actually trading (a force-run outside real session hours, a slow
+    fill, etc). Without this check, a duplicate buy for the same symbol can
+    slip through on a later run before the first order ever fills.
+    """
+    open_orders = trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
+    return {o.symbol for o in open_orders if o.side == OrderSide.BUY}
 
 
 def get_recent_bars(symbols: list[str], lookback_days: int = 60) -> dict:

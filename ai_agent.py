@@ -316,7 +316,7 @@ only required for buy/sell.
 # Risk enforcement (hard caps — independent of what the AI decided)
 # --------------------------------------------------------------------------
 
-def _enforce_caps(decisions: list, context: dict) -> list:
+def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> list:
     """Returns the list of decisions actually allowed to execute, each
     annotated with an 'allowed' bool and a 'cap_note' if rejected/clipped."""
     held = set(context["held_positions"].keys())
@@ -326,6 +326,7 @@ def _enforce_caps(decisions: list, context: dict) -> list:
 
     open_count = len(held)
     new_buys = 0
+    new_buy_symbols_this_run = set()
     approved = []
 
     for d in decisions:
@@ -347,6 +348,12 @@ def _enforce_caps(decisions: list, context: dict) -> list:
             if symbol in held:
                 d["allowed"] = False
                 d["cap_note"] = "already held, ignoring duplicate buy"
+            elif symbol in pending_buy_symbols:
+                d["allowed"] = False
+                d["cap_note"] = "a buy order for this symbol is already pending/unfilled, ignoring duplicate"
+            elif symbol in new_buy_symbols_this_run:
+                d["allowed"] = False
+                d["cap_note"] = "duplicate buy for this symbol already approved this run, ignoring"
             elif open_count >= config.AGENT["max_open_positions"]:
                 d["allowed"] = False
                 d["cap_note"] = "max open positions reached"
@@ -370,6 +377,7 @@ def _enforce_caps(decisions: list, context: dict) -> list:
                         d["allowed"] = True
                         open_count += 1
                         new_buys += 1
+                        new_buy_symbols_this_run.add(symbol)
                         cash -= qty * price
         elif action == "hold":
             d["allowed"] = False
@@ -493,7 +501,9 @@ def run():
     context = None
     news_context = None
     overall_reasoning = ""
+    market_open = True
     try:
+        market_open = ac.is_market_open()
         context = _build_context()
         missing = [
             s for s in config.AGENT["universe"]
@@ -504,15 +514,21 @@ def run():
             f"{len(context['held_positions'])} held."
             + (f" No price data this run for: {', '.join(missing)}" if missing else "")
         )
+        if not market_open:
+            print(
+                "Note: market is actually closed right now (this is a force-run via "
+                "manual_agent_run.py, which intentionally bypasses the market-hours "
+                "gate). Any orders submitted will sit unfilled until the next open."
+            )
         news_context = _get_news_context()
         ai_response = _call_gemini(context, news_context)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
-        decisions = _enforce_caps(decisions, context)
+        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_symbols())
         _execute(decisions)
 
-        run_id = _log_run(True, context, overall_reasoning, error=None, news_context=news_context)
+        run_id = _log_run(market_open, context, overall_reasoning, error=None, news_context=news_context)
         _log_decisions(run_id, decisions)
 
         print(f"Run complete. Reasoning: {overall_reasoning}")
@@ -526,6 +542,6 @@ def run():
 
     except Exception as e:
         print(f"Agent run failed: {e}")
-        _log_run(True, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
+        _log_run(market_open, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
         _notify("run failed", str(e)[:200])
         raise
