@@ -11,6 +11,14 @@ on:
         options:
           - plutus
           - helios
+      mode:
+        description: "run = normal forced run, premarket = test the pre-market review"
+        required: false
+        default: "run"
+        type: choice
+        options:
+          - run
+          - premarket
 
 jobs:
   run:
@@ -28,6 +36,7 @@ jobs:
       - name: Force-run trading agent (ignores market-hours check)
         env:
           AGENT_ID: ${{ inputs.agent_id }}
+          RUN_MODE: ${{ inputs.mode }}
           RUN_TRIGGER: ${{ github.event_name }}
           ALPACA_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
