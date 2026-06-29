@@ -40,6 +40,21 @@ NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
 # someone (Carter, or Claude during a chat) explicitly triggered it.
 RUN_TRIGGER = os.environ.get("RUN_TRIGGER", "unknown")
 
+_KEY_PARAM_RE = re.compile(r"([?&]key=)[^&\s]+")
+
+
+def _safe_str(e: Exception) -> str:
+    """
+    str(exception) for a failed Gemini request includes the full request URL
+    — which includes the API key as a `?key=...` query param. GitHub Actions
+    auto-masks secrets in its own log viewer, but that masking doesn't apply
+    to data this code separately ships off to Supabase (and from there, the
+    public dashboard). Always scrub before logging/storing any exception
+    text so a key can't end up sitting in plaintext somewhere masking can't
+    reach.
+    """
+    return _KEY_PARAM_RE.sub(r"\1***", str(e))
+
 
 # --------------------------------------------------------------------------
 # Context gathering
@@ -474,7 +489,7 @@ def _execute(decisions: list):
             d["order_status"] = str(getattr(result, "status", "submitted"))
         except Exception as e:
             d["order_id"] = None
-            d["order_status"] = f"error: {e}"
+            d["order_status"] = f"error: {_safe_str(e)}"
 
 
 # --------------------------------------------------------------------------
@@ -731,6 +746,7 @@ def run():
             _notify("made a move", summary)
 
     except Exception as e:
-        print(f"Agent run failed: {e}")
-        _log_run(market_open, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
+        safe_msg = _safe_str(e)
+        print(f"Agent run failed: {safe_msg}")
+        _log_run(market_open, context, overall_reasoning=overall_reasoning, error=safe_msg, news_context=news_context)
         raise
