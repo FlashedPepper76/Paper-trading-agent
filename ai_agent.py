@@ -313,9 +313,32 @@ only required for buy/sell.
         + news_block
     )
 
-    text = _gemini_generate(system_prompt, user_message, json_mode=True, max_output_tokens=3500)
-    cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    return json.loads(cleaned)
+    last_exc = None
+    cleaned = ""
+    for attempt in range(2):
+        prompt = user_message
+        if attempt > 0:
+            # Most failures seen in practice are an unterminated/invalid string
+            # well before any output-length limit, not truncation — i.e. Gemini
+            # occasionally emits a stray literal quote or newline inside a text
+            # field despite JSON mode. Ask explicitly for single-line, escaped
+            # strings and a shorter reasoning field, then give it one more try
+            # rather than failing (and skipping this run's decisions) outright.
+            prompt += (
+                "\n\n## Your previous response was invalid JSON\n"
+                f"Parse error: {last_exc}\n"
+                "Keep every string value on a single line with no literal line "
+                "breaks, make sure any quotes inside text are properly escaped, "
+                "and keep 'reasoning' to one short sentence per symbol."
+            )
+        text = _gemini_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
+        cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            last_exc = e
+            print(f"Gemini JSON parse failed on attempt {attempt + 1}/2 ({e}).")
+    raise last_exc
 
 
 # --------------------------------------------------------------------------
