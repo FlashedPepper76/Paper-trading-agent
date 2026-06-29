@@ -158,6 +158,7 @@ def _build_context():
             "equity": equity,
             "cash": cash,
             "cash_pct_of_equity": round(cash / equity * 100, 1) if equity else None,
+            "equity_vs_starting_balance": round(equity - config.STARTING_EQUITY, 2),
         },
         "held_positions": held,
         "watchlist": watchlist,
@@ -373,22 +374,32 @@ def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "
     else:
         pacing_line = f"{minutes_since_buy / 60:.1f} hours since your last buy."
 
+    equity_delta = context["account"]["equity_vs_starting_balance"]
+    if equity_delta >= 0:
+        equity_line = f"${equity_delta:,.2f} ABOVE the ${config.STARTING_EQUITY:,.0f} starting balance."
+    else:
+        equity_line = f"${abs(equity_delta):,.2f} BELOW the ${config.STARTING_EQUITY:,.0f} starting balance."
+
     system_prompt = _load_instructions() + extra_framing + f"""
 
 ## Your current portfolio status (weigh this yourself — nothing here is a rule, it's information)
-- Cash: {context['account']['cash_pct_of_equity']}% of equity (vs. your target floor of {config.AGENT['min_cash_buffer_pct'] * 100:.0f}%)
+- Equity is currently {equity_line} Try to stay above the starting balance
+  as much as possible — that's a real goal to weigh in your own risk-taking
+  and sizing decisions, not a hard rule the code enforces.
+- Cash: {context['account']['cash_pct_of_equity']}% of equity. There is no
+  hard cash-floor cap — you can deploy all of it if you have a real reason
+  to, but spending it down to (or near) zero is itself a risk to the equity
+  goal above, not a neutral act.
 - Open positions: {context['open_positions_count']} of {context['max_open_positions']} max
 - {pacing_line}
-A short gap since your last buy and/or thin cash relative to your floor are
-both real signals to weigh against your own goal and risk posture — not
-something the code will stop you from overriding if you have genuine
-conviction, but also not something to ignore by default.
+None of the above blocks you — the code will stop you from exceeding the
+hard limits below, but everything in this section is judgment, not
+enforcement.
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
 - Max open positions at once: {config.AGENT['max_open_positions']}
 - Max new positions opened per run: {config.AGENT['max_new_buys_per_run']}
 - Position size target: {config.AGENT['position_size_pct'] * 100:.0f}% of equity
-- Minimum cash buffer: {config.AGENT['min_cash_buffer_pct'] * 100:.0f}% of equity
 
 ## Output format
 Respond with ONLY valid JSON, no markdown fences, no other text, matching
@@ -543,21 +554,21 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                     d["cap_note"] = "no price data available for this symbol this run"
                 else:
                     target_notional = equity * config.AGENT["position_size_pct"]
-                    # The floor is a percentage of total EQUITY — a stable
-                    # reference point — not of remaining cash. Computing it
-                    # as a percentage of cash was a real bug: each buy spent
-                    # up to 95% of whatever was left, so cash trended toward
-                    # zero across successive buys instead of stopping at a
-                    # real floor (e.g. on a $100k account, buffer should mean
-                    # "never go below ~$5k," not "always leave 5% of
-                    # whatever's currently left, however little that is").
+                    # min_cash_buffer_pct now defaults to 0 for both agents —
+                    # there's no hard cash floor anymore, by design (see
+                    # config.py: the equity-vs-STARTING_EQUITY goal in the
+                    # prompt replaced it). This still computes a floor
+                    # generically in case that's ever changed back, and
+                    # importantly still sizes down to whatever's actually
+                    # available rather than rejecting outright just because
+                    # the *full* target size doesn't fit.
                     cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
                     free_cash = max(0.0, cash - cash_floor)
                     notional = min(target_notional, free_cash)
                     qty = int(notional // price)
                     if qty < 1:
                         d["allowed"] = False
-                        d["cap_note"] = "insufficient free cash after buffer"
+                        d["cap_note"] = "insufficient cash for even 1 share at the sized notional"
                     else:
                         d["qty"] = qty
                         d["entry_price"] = price

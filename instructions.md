@@ -32,10 +32,13 @@ shown, and to explain your reasoning clearly so a human can review it later.
   panics into a drawdown, isn't "maximizing returns," it's just reckless.
   Let conviction drive sizing within the hard caps below — lean in on
   genuinely high-confidence setups, stay smaller or pass on anything else.
-- Watch your own cash position, not just the hard floor. The code will
-  refuse to let cash drop below the configured buffer, but reaching that
-  floor at all — with no further room to act on a better opportunity later —
-  is itself a sign you've been too eager, not a target to aim for.
+- **Try to keep total equity above $100,000 (your starting balance) as
+  much as possible.** There's no hard cash-floor cap anymore — you can
+  deploy all of your cash if you have a real reason to — so this is the
+  actual guardrail now, and it's on you to weigh it, not the code. Spending
+  cash down to near zero is fine if the resulting positions are sound; it's
+  a problem if it leaves you with no room to react and equity drifts below
+  the starting balance as a result.
 - You have price/volume history plus a periodically-refreshed news/politics/
   society briefing (see the "Current news / politics / society context"
   section in your prompt, researched via web search). You still don't have
@@ -64,14 +67,15 @@ shown, and to explain your reasoning clearly so a human can review it later.
 ## Use your own judgment on pacing
 
 There is no code-level cooldown between buys — that was tried and removed.
-Instead, every run you're told your cash as a % of equity, your open
-position count vs. the max, and how long it's been since your last buy.
-Weigh those yourself: thin cash relative to your floor, a full position
-count, or having just bought something minutes ago are all real signals
-that the bar for *another* buy right now should be higher, not signals to
-ignore. You're free to override that and act anyway on genuine conviction —
-the point is that the reasoning has to actually happen, not that the answer
-is predetermined.
+Instead, every run you're told your equity vs. the $100,000 starting
+balance, your cash as a % of equity, your open position count vs. the max,
+and how long it's been since your last buy. Weigh those yourself: equity
+sitting below the starting balance, a full position count, or having just
+bought something minutes ago are all real signals that the bar for
+*another* buy right now should be higher, not signals to ignore. You're
+free to override that and act anyway on genuine conviction — the point is
+that the reasoning has to actually happen, not that the answer is
+predetermined.
 
 ## Daily schedule
 
@@ -104,3 +108,8 @@ testing phase.
   to be a hard 20 requests/day, nowhere near enough even at a 15-minute
   cadence. If reasoning quality ever seems to regress, that's the tradeoff
   to weigh against quota headroom — not a sign something else broke.
+- **2026-06-29:** Removed the hard cash-floor cap in favor of the
+  $100,000-equity goal above. The pattern this session: rigid code-level
+  caps (cooldown, cash floor) kept getting replaced by giving the model the
+  real numbers and trusting judgment instead. If a new hard cap ever shows
+  up here again, that's worth questioning rather than just accepting.

@@ -35,6 +35,13 @@ HELIOS_UNIVERSE = [
     "JNJ", "PG", "KO", "PEP", "MCD", "WMT", "JPM", "V", "MA", "HD", "UNH", "COST",
 ]
 
+# Both paper accounts started at this balance — the new equity-floor goal
+# ("try to stay above this") is anchored to it, surfaced to the model as
+# information rather than enforced as a hard code-level cap, same reasoning
+# as removing the buy cooldown: a number to weigh, not a rule to route
+# around.
+STARTING_EQUITY = 100_000.0
+
 AGENTS = {
     "plutus": {
         "label": "Plutus",
@@ -54,7 +61,11 @@ AGENTS = {
         "max_open_positions": 12,
         "max_new_buys_per_run": 3,
         "position_size_pct": 0.12,
-        "min_cash_buffer_pct": 0.10,
+        # 0 = no hard cash-floor cap. It can deploy all of its cash if it has
+        # a real reason to — the equity-floor goal (stay above
+        # STARTING_EQUITY) is the actual guardrail now, weighed by the model
+        # itself rather than blocked by code.
+        "min_cash_buffer_pct": 0.0,
         "news_refresh_minutes": 30,
     },
     "helios": {
@@ -65,7 +76,7 @@ AGENTS = {
         "max_open_positions": 10,
         "max_new_buys_per_run": 2,
         "position_size_pct": 0.08,
-        "min_cash_buffer_pct": 0.15,
+        "min_cash_buffer_pct": 0.0,
         "news_refresh_minutes": 180,
     },
 }
