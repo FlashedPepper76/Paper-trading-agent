@@ -9,7 +9,11 @@ on:
     # does, with a comment rather than two separate cron entries.
     # (Re-saved 2026-06-29 to force GitHub to re-register the schedule.)
     - cron: "35 13 * * 1-5"
-  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Internal: set to 'schedule' by the Supabase cron caller. Leave blank for a manual run."
+        required: false
 
 jobs:
   trade:
@@ -27,7 +31,7 @@ jobs:
       - name: Run trading bot (Helios)
         env:
           AGENT_ID: helios
-          RUN_TRIGGER: ${{ github.event_name }}
+          RUN_TRIGGER: ${{ github.event.inputs.source || github.event_name }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HELIOS }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HELIOS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_HELIOS }}
