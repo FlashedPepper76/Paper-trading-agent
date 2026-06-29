@@ -7,6 +7,7 @@ on:
     # (or want) a tight cadence. 13:35 UTC = 9:35am ET, a few minutes after
     # the open settles down. Covers the EST/EDT switch the same way trade.yml
     # does, with a comment rather than two separate cron entries.
+    # (Re-saved 2026-06-29 to force GitHub to re-register the schedule.)
     - cron: "35 13 * * 1-5"
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 

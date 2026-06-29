@@ -507,6 +507,73 @@ def _log_decisions(run_id: int, decisions: list):
     resp.raise_for_status()
 
 
+def _refresh_account_state() -> dict:
+    """
+    Re-fetches account + position state fresh from Alpaca. Called after this
+    run's own orders have been submitted, so what gets logged reflects what
+    actually happened this run instead of the pre-trade snapshot that was
+    only meant to feed the decision prompt above.
+    """
+    account = ac.get_account()
+    positions = ac.get_open_positions()
+    held = {}
+    for symbol, pos in positions.items():
+        held[symbol] = {
+            "qty": float(pos.qty),
+            "avg_entry_price": round(float(pos.avg_entry_price), 2),
+            "current_price": round(float(pos.current_price), 2),
+            "unrealized_pl_pct": round(float(pos.unrealized_plpc) * 100, 2),
+            "market_value": round(float(pos.market_value), 2),
+        }
+    return {
+        "account": {
+            "equity": round(float(account.equity), 2),
+            "cash": round(float(account.cash), 2),
+        },
+        "held_positions": held,
+    }
+
+
+def log_idle(market_open: bool):
+    """
+    Lightweight check-in for cron ticks that don't run the full agent (market
+    closed). Deliberately skips Gemini entirely so it doesn't burn API quota
+    every minute outside trading hours — just records a current account
+    snapshot and a plain "checked in, no action" note, so the dashboard shows
+    continuous liveness instead of long silent gaps between real runs.
+    """
+    try:
+        state = _refresh_account_state()
+        equity = state["account"]["equity"]
+        cash = state["account"]["cash"]
+        num_positions = len(state["held_positions"])
+    except Exception as e:
+        print(f"Could not fetch account snapshot for idle check-in ({e}).")
+        equity = cash = num_positions = None
+
+    payload = {
+        "agent_id": config.AGENT_ID,
+        "trigger": RUN_TRIGGER,
+        "market_open": market_open,
+        "account_equity": equity,
+        "account_cash": cash,
+        "num_open_positions": num_positions,
+        "overall_reasoning": "Market is closed — checked in, no action taken.",
+        "model_used": None,
+        "error": None,
+        "news_context": None,
+    }
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_runs",
+            headers=_supabase_headers(),
+            json=payload,
+            timeout=15,
+        ).raise_for_status()
+    except Exception as e:
+        print(f"Could not log idle check-in ({e}) — non-fatal.")
+
+
 def _log_positions(context: dict):
     """
     Replaces this agent's stored 'current positions' snapshot with what we
@@ -563,7 +630,6 @@ def run():
     try:
         market_open = ac.is_market_open()
         context = _build_context()
-        _log_positions(context)
         missing = [
             s for s in config.AGENT["universe"]
             if s not in context["held_positions"] and s not in context["watchlist"]
@@ -587,7 +653,19 @@ def run():
         decisions = _enforce_caps(decisions, context, ac.get_pending_buy_symbols())
         _execute(decisions)
 
-        run_id = _log_run(market_open, context, overall_reasoning, error=None, news_context=news_context)
+        # Re-fetch fresh from Alpaca now that this run's own orders have been
+        # submitted, so the logged equity/positions reflect what actually
+        # happened this run rather than the pre-trade snapshot used above to
+        # build the decision prompt. Falls back to the pre-trade snapshot if
+        # the refetch itself fails, so logging never blocks on this.
+        try:
+            post_context = _refresh_account_state()
+        except Exception as e:
+            print(f"Could not refresh post-trade account state ({e}); logging pre-trade snapshot instead.")
+            post_context = context
+        _log_positions(post_context)
+
+        run_id = _log_run(market_open, post_context, overall_reasoning, error=None, news_context=news_context)
         _log_decisions(run_id, decisions)
 
         print(f"Run complete. Reasoning: {overall_reasoning}")
@@ -602,5 +680,4 @@ def run():
     except Exception as e:
         print(f"Agent run failed: {e}")
         _log_run(market_open, context, overall_reasoning=overall_reasoning, error=str(e), news_context=news_context)
-        _notify("run failed", str(e)[:200])
         raise

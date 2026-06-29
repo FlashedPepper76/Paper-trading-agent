@@ -10,6 +10,9 @@ on:
     # Note: GitHub doesn't guarantee exact timing on scheduled workflows —
     # runs can be delayed under high platform load, so "every minute" is
     # the request, not a hard guarantee.
+    # (Re-saved 2026-06-29 — the schedule never fired once since this file
+    # was first added; GitHub's scheduler occasionally needs a fresh commit
+    # to "notice" a brand-new cron trigger and start running it.)
     - cron: "* 13-21 * * 1-5"
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 

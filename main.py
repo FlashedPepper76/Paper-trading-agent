@@ -18,7 +18,8 @@ def main():
     print(f"Agent: {config.AGENT['label']} ({config.AGENT_ID})")
 
     if not ac.is_market_open():
-        print("Market is closed. Exiting.")
+        print("Market is closed. Logging a check-in and exiting.")
+        ai_agent.log_idle(market_open=False)
         return
 
     print("Market is open — running AI agent.")
