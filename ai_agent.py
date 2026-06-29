@@ -400,11 +400,21 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                 else:
                     target_notional = equity * config.AGENT["position_size_pct"]
                     free_cash = cash * (1 - config.AGENT["min_cash_buffer_pct"])
-                    if target_notional > free_cash:
+                    # Size the position to whatever actually fits within the
+                    # cash buffer, capped at the normal target — rather than
+                    # rejecting outright just because the *full* target size
+                    # doesn't fit. Previously this compared the fixed
+                    # equity-based target directly against free cash, so once
+                    # enough positions were open that free cash dropped below
+                    # one full target size, every subsequent buy was rejected
+                    # even when there was still plenty of room for a smaller
+                    # position.
+                    notional = min(target_notional, free_cash)
+                    qty = int(notional // price)
+                    if qty < 1:
                         d["allowed"] = False
                         d["cap_note"] = "insufficient free cash after buffer"
                     else:
-                        qty = max(1, int(target_notional // price))
                         d["qty"] = qty
                         d["entry_price"] = price
                         d["allowed"] = True
