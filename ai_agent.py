@@ -380,6 +380,42 @@ only required for buy/sell.
 # Risk enforcement (hard caps — independent of what the AI decided)
 # --------------------------------------------------------------------------
 
+def _minutes_since_last_buy() -> float | None:
+    """
+    Minutes since this agent's most recent *executed* buy, or None if it has
+    never bought anything. This is the hard backstop behind 'it doesn't have
+    to buy' — independent of whatever the AI proposes, code refuses to open
+    any new position until enough time has passed since the last one. Purely
+    advisory prompt language wasn't enough in practice (an agent invoked
+    every few minutes found *some* plausible thesis far more often than its
+    "trade rarely" instructions intended), so this makes restraint structural
+    rather than optional.
+    """
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_decisions",
+            headers=_supabase_headers(),
+            params={
+                "agent_id": f"eq.{config.AGENT_ID}",
+                "action": "eq.buy",
+                "order_id": "not.is.null",
+                "select": "created_at",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return None
+        last_at = datetime.fromisoformat(rows[0]["created_at"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last_at).total_seconds() / 60
+    except Exception as e:
+        print(f"Could not check last-buy cooldown ({e}); not enforcing it this run.")
+        return None
+
+
 def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> list:
     """Returns the list of decisions actually allowed to execute, each
     annotated with an 'allowed' bool and a 'cap_note' if rejected/clipped."""
@@ -392,6 +428,14 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
     new_buys = 0
     new_buy_symbols_this_run = set()
     approved = []
+
+    cooldown_minutes = config.AGENT.get("min_minutes_between_buys", 0)
+    minutes_since_buy = _minutes_since_last_buy() if cooldown_minutes else None
+    cooldown_active = (
+        cooldown_minutes > 0
+        and minutes_since_buy is not None
+        and minutes_since_buy < cooldown_minutes
+    )
 
     for d in decisions:
         symbol = d.get("symbol", "").upper()
@@ -412,7 +456,13 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                 d["exit_price"] = pos["current_price"]
                 d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
         elif action == "buy":
-            if symbol in held:
+            if cooldown_active:
+                d["allowed"] = False
+                d["cap_note"] = (
+                    f"buy cooldown active ({minutes_since_buy:.0f}m since last buy, "
+                    f"need {cooldown_minutes}m) — holding is fine"
+                )
+            elif symbol in held:
                 d["allowed"] = False
                 d["cap_note"] = "already held, ignoring duplicate buy"
             elif symbol in pending_buy_symbols:
@@ -434,16 +484,16 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                     d["cap_note"] = "no price data available for this symbol this run"
                 else:
                     target_notional = equity * config.AGENT["position_size_pct"]
-                    free_cash = cash * (1 - config.AGENT["min_cash_buffer_pct"])
-                    # Size the position to whatever actually fits within the
-                    # cash buffer, capped at the normal target — rather than
-                    # rejecting outright just because the *full* target size
-                    # doesn't fit. Previously this compared the fixed
-                    # equity-based target directly against free cash, so once
-                    # enough positions were open that free cash dropped below
-                    # one full target size, every subsequent buy was rejected
-                    # even when there was still plenty of room for a smaller
-                    # position.
+                    # The floor is a percentage of total EQUITY — a stable
+                    # reference point — not of remaining cash. Computing it
+                    # as a percentage of cash was a real bug: each buy spent
+                    # up to 95% of whatever was left, so cash trended toward
+                    # zero across successive buys instead of stopping at a
+                    # real floor (e.g. on a $100k account, buffer should mean
+                    # "never go below ~$5k," not "always leave 5% of
+                    # whatever's currently left, however little that is").
+                    cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
+                    free_cash = max(0.0, cash - cash_floor)
                     notional = min(target_notional, free_cash)
                     qty = int(notional // price)
                     if qty < 1:
@@ -553,6 +603,7 @@ def _log_decisions(run_id: int, decisions: list):
     rows = [
         {
             "run_id": run_id,
+            "agent_id": config.AGENT_ID,
             "symbol": d.get("symbol"),
             "action": d.get("action"),
             "qty": d.get("qty"),
