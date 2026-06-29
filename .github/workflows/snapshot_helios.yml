@@ -1,0 +1,30 @@
+name: Helios Account Snapshot (no AI, Alpaca-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Internal: set to 'schedule' by the Supabase cron caller. Leave blank for a manual run."
+        required: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull account snapshot from Alpaca
+        env:
+          AGENT_ID: helios
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HELIOS }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HELIOS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python snapshot.py
