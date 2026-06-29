@@ -65,14 +65,12 @@ def main():
     ).raise_for_status()
 
     # Refresh the per-symbol positions snapshot the dashboard's Positions
-    # page reads — same delete-then-insert approach as ai_agent.py's
-    # _log_positions, kept independent here so it can run every minute.
-    requests.delete(
-        f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
-        headers=_headers(),
-        params={"agent_id": f"eq.{config.AGENT_ID}"},
-        timeout=15,
-    ).raise_for_status()
+    # page reads. Upsert-then-prune (not delete-then-insert) — this runs
+    # roughly every minute and ai_agent.py writes to the same table on its
+    # own 15-minute cadence, so a wholesale delete from either process could
+    # land mid-write from the other. Upserting by the (agent_id, symbol)
+    # unique constraint and only deleting symbols no longer held avoids that
+    # window entirely.
     if held:
         rows = [
             {"agent_id": config.AGENT_ID, "symbol": symbol, **pos}
@@ -80,10 +78,20 @@ def main():
         ]
         requests.post(
             f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
-            headers=_headers(),
+            headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            params={"on_conflict": "agent_id,symbol"},
             json=rows,
             timeout=30,
         ).raise_for_status()
+
+    held_list = ",".join(held.keys()) if held else ""
+    symbol_filter = f"not.in.({held_list})" if held_list else "not.is.null"
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
+        headers=_headers(),
+        params={"agent_id": f"eq.{config.AGENT_ID}", "symbol": symbol_filter},
+        timeout=15,
+    ).raise_for_status()
 
     print(
         f"Snapshot logged for {config.AGENT_ID}: equity={state_payload['equity']} "

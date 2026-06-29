@@ -177,11 +177,12 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
     for i, key in enumerate(GEMINI_KEYS):
         is_last_key = i == n_keys - 1
         # A 429 on a non-last key just moves on to the next key (1 try each).
-        # On the last key, there's nowhere further to fail over to, so give a
-        # transient per-minute rate-limit hit a couple of short backoff
-        # retries instead of failing the run outright — this matters more
-        # now that an agent without its own fallback key can be invoked
-        # every minute.
+        # On the last key, a couple of short backoff retries used to run
+        # unconditionally — but in practice every retry against a genuine
+        # daily quota exhaustion ("RESOURCE_EXHAUSTED" /
+        # free_tier_requests) failed every single time and just burned
+        # GitHub Actions minutes for nothing. Only bother retrying when the
+        # 429 doesn't look like that — i.e. an actually transient hit.
         rate_limit_attempts = 3 if is_last_key else 1
         for attempt in range(rate_limit_attempts):
             try:
@@ -198,7 +199,10 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                     if not is_last_key:
                         print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
                         break
-                    if attempt < rate_limit_attempts - 1:
+                    quota_exhausted = "RESOURCE_EXHAUSTED" in resp.text and "free_tier_requests" in resp.text
+                    if quota_exhausted:
+                        print(f"Gemini key #{i + 1}: daily free-tier quota exhausted — not retrying, won't clear within seconds.")
+                    elif attempt < rate_limit_attempts - 1:
                         wait = 8 * (attempt + 1)
                         print(
                             f"Gemini key #{i + 1} hit a rate/quota limit (429), no fallback key "
@@ -703,18 +707,16 @@ def _log_positions(context: dict):
     Positions view and the bought/current price shown per decision in the
     log, without the dashboard ever needing to talk to Alpaca directly.
 
-    Wholesale delete-then-insert rather than upsert, since a closed
-    position needs to disappear from the snapshot too, not just have its
-    old row linger. Best-effort — never blocks a trading run.
+    Upsert-then-prune rather than delete-then-insert: a wholesale delete
+    followed by a separate insert leaves a real window where this agent has
+    zero rows, and snapshot.py writes to this same table roughly every
+    minute — a delete from one process landing between another process's
+    delete and insert could leave stale or duplicate rows, or a moment with
+    none at all. Upserting by the (agent_id, symbol) unique constraint and
+    only deleting symbols no longer held avoids that window entirely.
+    Best-effort either way — never blocks a trading run.
     """
     try:
-        requests.delete(
-            f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
-            headers=_supabase_headers(),
-            params={"agent_id": f"eq.{config.AGENT_ID}"},
-            timeout=15,
-        ).raise_for_status()
-
         held = context["held_positions"] if context else {}
         if held:
             rows = [
@@ -731,10 +733,22 @@ def _log_positions(context: dict):
             ]
             requests.post(
                 f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
-                headers=_supabase_headers(),
+                headers={**_supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                params={"on_conflict": "agent_id,symbol"},
                 json=rows,
                 timeout=30,
             ).raise_for_status()
+
+        # Prune any symbol no longer held (closed positions shouldn't
+        # linger), scoped to this agent and excluding what we just upserted.
+        held_list = ",".join(held.keys()) if held else ""
+        symbol_filter = f"not.in.({held_list})" if held_list else "not.is.null"
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_positions",
+            headers=_supabase_headers(),
+            params={"agent_id": f"eq.{config.AGENT_ID}", "symbol": symbol_filter},
+            timeout=15,
+        ).raise_for_status()
     except Exception as e:
         print(f"Could not update positions snapshot ({e}) — non-fatal.")
 
