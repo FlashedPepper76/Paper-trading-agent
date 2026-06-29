@@ -19,6 +19,7 @@ silent gaps in the log, and should never bypass the risk caps.
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -157,27 +158,46 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
         body["tools"] = tools
 
     last_error = None
+    n_keys = len(GEMINI_KEYS)
     for i, key in enumerate(GEMINI_KEYS):
-        try:
-            resp = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{config.AGENT['gemini_model']}:generateContent",
-                params={"key": key},
-                headers={"content-type": "application/json"},
-                json=body,
-                timeout=60,
-            )
-            if resp.status_code == 429 and i < len(GEMINI_KEYS) - 1:
-                print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            if i < len(GEMINI_KEYS) - 1:
-                print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
-                continue
-            raise
+        is_last_key = i == n_keys - 1
+        # A 429 on a non-last key just moves on to the next key (1 try each).
+        # On the last key, there's nowhere further to fail over to, so give a
+        # transient per-minute rate-limit hit a couple of short backoff
+        # retries instead of failing the run outright — this matters more
+        # now that an agent without its own fallback key can be invoked
+        # every minute.
+        rate_limit_attempts = 3 if is_last_key else 1
+        for attempt in range(rate_limit_attempts):
+            try:
+                resp = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{config.AGENT['gemini_model']}:generateContent",
+                    params={"key": key},
+                    headers={"content-type": "application/json"},
+                    json=body,
+                    timeout=60,
+                )
+                if resp.status_code == 429:
+                    if not is_last_key:
+                        print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
+                        break
+                    if attempt < rate_limit_attempts - 1:
+                        wait = 8 * (attempt + 1)
+                        print(
+                            f"Gemini key #{i + 1} hit a rate/quota limit (429), no fallback key "
+                            f"left — waiting {wait}s and retrying ({attempt + 1}/{rate_limit_attempts - 1})..."
+                        )
+                        time.sleep(wait)
+                        continue
+                resp.raise_for_status()
+                data = resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if not is_last_key:
+                    print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
+                    break
+                raise
     raise last_error or RuntimeError("No Gemini API keys configured")
 
 
