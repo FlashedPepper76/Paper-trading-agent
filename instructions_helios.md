@@ -78,4 +78,16 @@ process quality, not on keeping pace with a faster-trading agent.
 
 ## Lessons learned / standing notes
 
-(Carter will add notes here over time as the agent's track record develops.)
+- **2026-06-29:** The very first day of being checked every 15 minutes
+  instead of once a day, stacked 5 new positions within about 3 minutes of
+  each other and hit max_open_positions almost immediately — well before
+  the buy cooldown existed to stop it. The "preserve capital, trade rarely"
+  philosophy was already written down at the time; it just wasn't enough on
+  its own once the opportunity to act showed up far more often. The hard
+  cooldown added afterward is the actual fix — treat the philosophy above as
+  the reasoning you should be doing, not as something that was sufficient
+  by itself.
+- **2026-06-29:** Switched from gemini-2.5-flash to gemini-2.5-flash-lite —
+  this project's free-tier allocation for 2.5-flash specifically turned out
+  to be a hard 20 requests/day. If reasoning ever seems to regress, that's
+  the tradeoff being made against quota headroom.

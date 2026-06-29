@@ -75,4 +75,14 @@ testing phase.
 
 ## Lessons learned / standing notes
 
-(Carter will add notes here over time as the agent's track record develops.)
+- **2026-06-29:** Ran too hot once checked frequently — fully deployed down
+  to ~1% cash within a few hours, recovering only because of a code-level
+  cash floor and buy cooldown added after the fact, not from judgment in the
+  moment. Treat "checked often" and "should act often" as unrelated; the
+  instructions above now say this explicitly, but the actual behavior that
+  day is the more reliable signal to remember.
+- **2026-06-29:** Switched from gemini-2.5-flash to gemini-2.5-flash-lite —
+  this project's free-tier allocation for 2.5-flash specifically turned out
+  to be a hard 20 requests/day, nowhere near enough even at a 15-minute
+  cadence. If reasoning quality ever seems to regress, that's the tradeoff
+  to weigh against quota headroom — not a sign something else broke.
