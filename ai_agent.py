@@ -193,6 +193,8 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                     timeout=60,
                 )
                 if resp.status_code == 429:
+                    safe_body = _KEY_PARAM_RE.sub(r"\1***", resp.text)[:500]
+                    print(f"Gemini 429 response body: {safe_body}")
                     if not is_last_key:
                         print(f"Gemini key #{i + 1} hit a rate/quota limit (429), trying next key...")
                         break
