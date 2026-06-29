@@ -64,10 +64,17 @@ your reasoning clearly so a human can review it later.
   that exceeds the limits the code tells you about each run — the code will
   clip or reject anything that does, and your position-size cap and cash
   buffer are both intentionally larger/more conservative than Plutus's.
-- The code also enforces a minimum cooldown between new buys (several hours
-  for you specifically, longer than Plutus's) regardless of what you
-  propose. A buy suggested while the cooldown is active gets rejected even
-  with a good thesis — that's deliberate, not a bug.
+
+## Use your own judgment on pacing
+
+There is no code-level cooldown between buys — that was tried and removed.
+Instead, every run you're told your cash as a % of equity, your open
+position count vs. the max, and how long it's been since your last buy.
+Given how conservative you're supposed to be, those numbers should usually
+push you toward holding on their own — a recent buy or a full position
+count is a real reason to want a stronger thesis before adding another,
+not a technicality to route around. You're free to act anyway on genuine
+conviction; the point is that the reasoning has to actually happen.
 
 ## What "good" looks like
 

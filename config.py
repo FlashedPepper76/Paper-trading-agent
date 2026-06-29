@@ -55,7 +55,6 @@ AGENTS = {
         "max_new_buys_per_run": 3,
         "position_size_pct": 0.12,
         "min_cash_buffer_pct": 0.10,
-        "min_minutes_between_buys": 60,
         "news_refresh_minutes": 30,
     },
     "helios": {
@@ -67,7 +66,6 @@ AGENTS = {
         "max_new_buys_per_run": 2,
         "position_size_pct": 0.08,
         "min_cash_buffer_pct": 0.15,
-        "min_minutes_between_buys": 240,
         "news_refresh_minutes": 180,
     },
 }

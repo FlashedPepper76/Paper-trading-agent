@@ -107,13 +107,21 @@ def _build_context():
         if stats:
             watchlist[symbol] = stats
 
+    cash = round(float(account.cash), 2)
+    equity = round(float(account.equity), 2)
+    minutes_since_buy = _minutes_since_last_buy()
+
     return {
         "account": {
-            "equity": round(float(account.equity), 2),
-            "cash": round(float(account.cash), 2),
+            "equity": equity,
+            "cash": cash,
+            "cash_pct_of_equity": round(cash / equity * 100, 1) if equity else None,
         },
         "held_positions": held,
         "watchlist": watchlist,
+        "open_positions_count": len(held),
+        "max_open_positions": config.AGENT["max_open_positions"],
+        "minutes_since_last_buy": round(minutes_since_buy, 1) if minutes_since_buy is not None else None,
     }
 
 
@@ -315,7 +323,24 @@ def _get_news_context() -> str | None:
 # --------------------------------------------------------------------------
 
 def _call_gemini(context: dict, news_context: str | None) -> dict:
+    minutes_since_buy = context.get("minutes_since_last_buy")
+    if minutes_since_buy is None:
+        pacing_line = "No prior buy on record — this would be the first."
+    elif minutes_since_buy < 60:
+        pacing_line = f"{minutes_since_buy:.0f} minutes since your last buy."
+    else:
+        pacing_line = f"{minutes_since_buy / 60:.1f} hours since your last buy."
+
     system_prompt = _load_instructions() + f"""
+
+## Your current portfolio status (weigh this yourself — nothing here is a rule, it's information)
+- Cash: {context['account']['cash_pct_of_equity']}% of equity (vs. your target floor of {config.AGENT['min_cash_buffer_pct'] * 100:.0f}%)
+- Open positions: {context['open_positions_count']} of {context['max_open_positions']} max
+- {pacing_line}
+A short gap since your last buy and/or thin cash relative to your floor are
+both real signals to weigh against your own goal and risk posture — not
+something the code will stop you from overriding if you have genuine
+conviction, but also not something to ignore by default.
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
 - Max open positions at once: {config.AGENT['max_open_positions']}
@@ -389,13 +414,13 @@ only required for buy/sell.
 def _minutes_since_last_buy() -> float | None:
     """
     Minutes since this agent's most recent *executed* buy, or None if it has
-    never bought anything. This is the hard backstop behind 'it doesn't have
-    to buy' — independent of whatever the AI proposes, code refuses to open
-    any new position until enough time has passed since the last one. Purely
-    advisory prompt language wasn't enough in practice (an agent invoked
-    every few minutes found *some* plausible thesis far more often than its
-    "trade rarely" instructions intended), so this makes restraint structural
-    rather than optional.
+    never bought anything. Surfaced to the model as information (see
+    _call_gemini's "portfolio status" section) so it can weigh its own
+    pacing — this used to be a hard code-level cooldown that blocked any buy
+    outright regardless of the AI's reasoning, but that meant the model
+    couldn't actually reason about it at all (it was never even told the
+    cooldown existed). Removed in favor of giving it the real numbers and
+    trusting its judgment, same as the rest of the portfolio context.
     """
     try:
         resp = requests.get(
@@ -435,14 +460,6 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
     new_buy_symbols_this_run = set()
     approved = []
 
-    cooldown_minutes = config.AGENT.get("min_minutes_between_buys", 0)
-    minutes_since_buy = _minutes_since_last_buy() if cooldown_minutes else None
-    cooldown_active = (
-        cooldown_minutes > 0
-        and minutes_since_buy is not None
-        and minutes_since_buy < cooldown_minutes
-    )
-
     for d in decisions:
         symbol = d.get("symbol", "").upper()
         action = d.get("action", "").lower()
@@ -462,13 +479,7 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                 d["exit_price"] = pos["current_price"]
                 d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
         elif action == "buy":
-            if cooldown_active:
-                d["allowed"] = False
-                d["cap_note"] = (
-                    f"buy cooldown active ({minutes_since_buy:.0f}m since last buy, "
-                    f"need {cooldown_minutes}m) — holding is fine"
-                )
-            elif symbol in held:
+            if symbol in held:
                 d["allowed"] = False
                 d["cap_note"] = "already held, ignoring duplicate buy"
             elif symbol in pending_buy_symbols:
