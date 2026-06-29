@@ -19,14 +19,15 @@ silent gaps in the log, and should never bypass the risk caps.
 import json
 import os
 import re
-import time
-from datetime import datetime, timezone
+import time as time_module
+from datetime import datetime, timedelta, timezone
 
 import requests
 from alpaca.trading.enums import OrderSide
 
 import config
 import alpaca_client as ac
+from schedule import market_phase
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
@@ -54,6 +55,47 @@ def _safe_str(e: Exception) -> str:
     reach.
     """
     return _KEY_PARAM_RE.sub(r"\1***", str(e))
+
+
+# --------------------------------------------------------------------------
+# Daily schedule phases
+# --------------------------------------------------------------------------
+
+def _yesterday_recap() -> str:
+    """
+    Plain-text summary of this agent's own buy/sell decisions over roughly
+    the last trading day, for the pre-market review prompt. Holds aren't
+    included — there can be dozens of them and "nothing changed" isn't
+    useful recap material; the run-level overall_reasoning history already
+    covers that if anyone wants to read it later.
+    """
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_decisions",
+            headers=_supabase_headers(),
+            params={
+                "agent_id": f"eq.{config.AGENT_ID}",
+                "action": "in.(buy,sell)",
+                "created_at": f"gte.{since}",
+                "select": "symbol,action,qty,order_status,reasoning,created_at",
+                "order": "created_at.asc",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return "No buy or sell decisions were made in the prior trading day — it was a full hold."
+        lines = [
+            f"- {r['action'].upper()} {r.get('qty') or ''} {r['symbol']} "
+            f"({r.get('order_status', 'unknown')}): {r.get('reasoning', '')}"
+            for r in rows
+        ]
+        return "Buy/sell decisions from the prior trading day:\n" + "\n".join(lines)
+    except Exception as e:
+        print(f"Could not build yesterday's recap ({e}); proceeding without it.")
+        return "(Could not load yesterday's activity — proceed using current portfolio state only.)"
 
 
 # --------------------------------------------------------------------------
@@ -216,7 +258,7 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                             f"Gemini key #{i + 1} hit a rate/quota limit (429), no fallback key "
                             f"left — waiting {wait}s and retrying ({attempt + 1}/{rate_limit_attempts - 1})..."
                         )
-                        time.sleep(wait)
+                        time_module.sleep(wait)
                         continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -322,7 +364,7 @@ def _get_news_context() -> str | None:
 # Decision call
 # --------------------------------------------------------------------------
 
-def _call_gemini(context: dict, news_context: str | None) -> dict:
+def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "") -> dict:
     minutes_since_buy = context.get("minutes_since_last_buy")
     if minutes_since_buy is None:
         pacing_line = "No prior buy on record — this would be the first."
@@ -331,7 +373,7 @@ def _call_gemini(context: dict, news_context: str | None) -> dict:
     else:
         pacing_line = f"{minutes_since_buy / 60:.1f} hours since your last buy."
 
-    system_prompt = _load_instructions() + f"""
+    system_prompt = _load_instructions() + extra_framing + f"""
 
 ## Your current portfolio status (weigh this yourself — nothing here is a rule, it's information)
 - Cash: {context['account']['cash_pct_of_equity']}% of equity (vs. your target floor of {config.AGENT['min_cash_buffer_pct'] * 100:.0f}%)
@@ -827,4 +869,72 @@ def run():
         safe_msg = _safe_str(e)
         print(f"Agent run failed: {safe_msg}")
         _log_run(market_open, context, overall_reasoning=overall_reasoning, error=safe_msg, news_context=news_context)
+        raise
+
+
+_PREMARKET_FRAMING = """
+
+## This is your once-daily pre-market review
+Markets are still closed — they open in about an hour. This is a dedicated
+moment to look back at the prior trading day (decisions and outcomes below)
+and your current equity/cash/positions, and decide whether there's a
+genuine reason to queue a buy ahead of the open. You do not have to buy —
+if nothing here changes your thesis on anything, holding is the right
+answer, exactly like any other run. A buy placed now queues as a normal
+day order and fills at or shortly after the open; it does not fill
+immediately.
+"""
+
+
+def run_premarket_review():
+    """
+    Once per trading day, ~1 hour before open (see market_phase()): reviews
+    the prior trading day's buy/sell activity plus current equity/cash/
+    positions, and gets one chance to queue a buy ahead of the open. Shares
+    every code path with the regular run() — same risk caps, same logging,
+    same notification rule — the only difference is the extra framing/recap
+    injected into the prompt and that market_open is always False here
+    (the market genuinely isn't open yet when this runs).
+    """
+    context = None
+    news_context = None
+    overall_reasoning = ""
+    try:
+        context = _build_context()
+        recap = _yesterday_recap()
+        print(f"Pre-market review. Yesterday recap: {recap}")
+
+        news_context = _get_news_context()
+        ai_response = _call_gemini(context, news_context, extra_framing=_PREMARKET_FRAMING + "\n" + recap)
+        overall_reasoning = ai_response.get("overall_reasoning", "")
+        decisions = ai_response.get("decisions", [])
+
+        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_symbols())
+        _execute(decisions)
+
+        try:
+            post_context = _refresh_account_state()
+        except Exception as e:
+            print(f"Could not refresh post-trade account state ({e}); logging pre-trade snapshot instead.")
+            post_context = context
+        _log_positions(post_context)
+
+        run_id = _log_run(market_open=False, context=post_context, overall_reasoning=overall_reasoning,
+                           error=None, news_context=news_context)
+        _log_decisions(run_id, decisions)
+
+        print(f"Pre-market review complete. Reasoning: {overall_reasoning}")
+        for d in decisions:
+            print(f"  {d['symbol']}: {d['action']} -> {d.get('order_status')} | {d.get('reasoning', '')}")
+
+        executed = [d for d in decisions if d.get("order_id")]
+        if executed:
+            summary = ", ".join(f"{d['action'].upper()} {d.get('qty')} {d['symbol']}" for d in executed)
+            _notify("queued a pre-market move", f"{summary} (will fill at/after the open)")
+
+    except Exception as e:
+        safe_msg = _safe_str(e)
+        print(f"Pre-market review failed: {safe_msg}")
+        _log_run(market_open=False, context=context, overall_reasoning=overall_reasoning,
+                 error=safe_msg, news_context=news_context)
         raise

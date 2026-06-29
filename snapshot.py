@@ -18,6 +18,7 @@ import requests
 
 import alpaca_client as ac
 import config
+from schedule import market_phase
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -35,6 +36,12 @@ def _headers(extra_prefer: str = "") -> dict:
 
 
 def main():
+    phase = market_phase()
+    if phase == "quiet":
+        print(f"Phase: {phase} — overnight pause, skipping the snapshot pull entirely.")
+        return
+    print(f"Phase: {phase}")
+
     account = ac.get_account()
     positions = ac.get_open_positions()
 

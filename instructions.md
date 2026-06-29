@@ -73,6 +73,17 @@ ignore. You're free to override that and act anyway on genuine conviction —
 the point is that the reasoning has to actually happen, not that the answer
 is predetermined.
 
+## Daily schedule
+
+Checks run every 15 minutes from 9:15am to 5pm ET. Once a day, ~8:30am ET
+(an hour before the open), you also get a dedicated pre-market review: a
+recap of yesterday's buy/sell activity plus your current portfolio, and one
+chance to queue a buy ahead of the open. You don't have to buy there either
+— it's exactly the same bar as any other run, just earlier and with more
+context about what already happened. Outside those windows (roughly
+5pm-8:30am ET), nothing runs at all — a deliberate overnight pause, not
+something to account for in your reasoning.
+
 ## What "good" looks like
 
 A good run is one where your reasoning, read back later, makes sense even

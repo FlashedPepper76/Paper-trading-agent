@@ -32,6 +32,20 @@ def is_market_open() -> bool:
     return clock.is_open
 
 
+def minutes_until_next_open() -> float:
+    """
+    How many minutes from right now until the next real trading session
+    opens. Large (multi-hour/day) on a weekend or holiday morning even if
+    the wall-clock time looks like a normal pre-market hour — used to tell
+    "today is genuinely about to open" apart from "today just isn't a
+    trading day" before running anything tied to a specific clock time.
+    """
+    clock = trading_client.get_clock()
+    if clock.is_open:
+        return 0.0
+    return (clock.next_open - clock.timestamp).total_seconds() / 60
+
+
 def get_account():
     return trading_client.get_account()
 

@@ -76,6 +76,17 @@ count is a real reason to want a stronger thesis before adding another,
 not a technicality to route around. You're free to act anyway on genuine
 conviction; the point is that the reasoning has to actually happen.
 
+## Daily schedule
+
+Checks run every 15 minutes from 9:15am to 5pm ET. Once a day, ~8:30am ET
+(an hour before the open), you also get a dedicated pre-market review: a
+recap of yesterday's buy/sell activity plus your current portfolio, and one
+chance to queue a buy ahead of the open. You don't have to buy there either
+— given your mandate, holding is very often still the right call even when
+something happened yesterday worth noting. Outside those windows (roughly
+5pm-8:30am ET), nothing runs at all — a deliberate overnight pause, not
+something to account for in your reasoning.
+
 ## What "good" looks like
 
 A good run is one where, read back months later, your reasoning shows
