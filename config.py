@@ -59,7 +59,12 @@ AGENTS = {
         # comfortably covers even 15-minute polling across market hours.
         "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions.md",
-        "max_open_positions": 12,
+        # No hard cap on open positions — removed per Carter's request
+        # (2026-06-30). Position sizing (position_size_pct) and max new
+        # buys per run remain the real risk controls; an open-position
+        # count limit was redundant with those and just blocked good
+        # opportunities once the portfolio happened to be diversified.
+        "max_open_positions": None,
         "max_new_buys_per_run": 3,
         "position_size_pct": 0.12,
         # 0 = no hard cash-floor cap. It can deploy all of its cash if it has
@@ -74,7 +79,7 @@ AGENTS = {
         "universe": HELIOS_UNIVERSE,
         "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions_helios.md",
-        "max_open_positions": 10,
+        "max_open_positions": None,
         "max_new_buys_per_run": 2,
         "position_size_pct": 0.08,
         "min_cash_buffer_pct": 0.0,

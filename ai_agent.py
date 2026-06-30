@@ -453,14 +453,14 @@ def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "
   hard cash-floor cap — you can deploy all of it if you have a real reason
   to, but spending it down to (or near) zero is itself a risk to the equity
   goal above, not a neutral act.
-- Open positions: {context['open_positions_count']} of {context['max_open_positions']} max
+- Open positions: {context['open_positions_count']}{f" of {context['max_open_positions']} max" if context['max_open_positions'] is not None else " (no hard cap on count)"}
 - {pacing_line}
 None of the above blocks you — the code will stop you from exceeding the
 hard limits below, but everything in this section is judgment, not
 enforcement.
 
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
-- Max open positions at once: {config.AGENT['max_open_positions']}
+- {f"Max open positions at once: {config.AGENT['max_open_positions']}" if config.AGENT['max_open_positions'] is not None else "No cap on number of open positions — sizing and pacing are the controls"}
 - Max new positions opened per run: {config.AGENT['max_new_buys_per_run']}
 - Position size target: {config.AGENT['position_size_pct'] * 100:.0f}% of equity
 
@@ -604,7 +604,7 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
             elif symbol in new_buy_symbols_this_run:
                 d["allowed"] = False
                 d["cap_note"] = "duplicate buy for this symbol already approved this run, ignoring"
-            elif open_count >= config.AGENT["max_open_positions"]:
+            elif config.AGENT["max_open_positions"] is not None and open_count >= config.AGENT["max_open_positions"]:
                 d["allowed"] = False
                 d["cap_note"] = "max open positions reached"
             elif new_buys >= config.AGENT["max_new_buys_per_run"]:
