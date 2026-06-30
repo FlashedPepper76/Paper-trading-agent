@@ -42,6 +42,7 @@ jobs:
           ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
           GEMINI_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS || secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}

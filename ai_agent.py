@@ -31,7 +31,8 @@ from schedule import market_phase
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
-GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
+GEMINI_API_KEY_3 = os.environ.get("GEMINI_API_KEY_3", "")
+GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3) if k]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
