@@ -50,13 +50,14 @@ AGENTS = {
         # this project turned out to be a hard 20 requests/day (confirmed via
         # the actual 429 response body — "limit: 20, model: gemini-2.5-flash"
         # — well below the 100-1500/day figures generic docs/guides cite, and
-        # nowhere near enough even at a 15-minute decision cadence). Quota is
-        # tracked per-model within a project, so a different model name gets
-        # its own separate, untouched bucket — Flash-Lite's free tier is
-        # documented as meaningfully higher (RPM and RPD) than Flash's, and
-        # the task here (synthesize given price/news context into a
-        # buy/sell/hold call) doesn't need Flash's extra reasoning depth.
-        "gemini_model": "gemini-2.5-flash-lite",
+        # nowhere near enough even at a 15-minute decision cadence). Then
+        # moved off gemini-2.5-flash-lite too, once AI Studio's Rate Limit
+        # page (confirmed visually, not just from a 429 body) showed it was
+        # ALSO capped at 20 RPD on this project — same ceiling, different
+        # model name. gemini-3.1-flash-lite carries a 500 RPD / 15 RPM quota
+        # on the same project, confirmed via the same Rate Limit page, which
+        # comfortably covers even 15-minute polling across market hours.
+        "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions.md",
         "max_open_positions": 12,
         "max_new_buys_per_run": 3,
@@ -71,7 +72,7 @@ AGENTS = {
     "helios": {
         "label": "Helios",
         "universe": HELIOS_UNIVERSE,
-        "gemini_model": "gemini-2.5-flash-lite",
+        "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions_helios.md",
         "max_open_positions": 10,
         "max_new_buys_per_run": 2,
