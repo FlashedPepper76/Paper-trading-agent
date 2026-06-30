@@ -33,6 +33,9 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_API_KEY_3 = os.environ.get("GEMINI_API_KEY_3", "")
 GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3) if k]
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
+GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
@@ -198,6 +201,55 @@ def _load_instructions() -> str:
         return f.read()
 
 
+def _groq_generate(system_prompt: str, user_message: str, *,
+                    json_mode=True, max_output_tokens=2000) -> str:
+    """
+    Fallback path when every Gemini key is exhausted or Gemini itself is
+    returning 503s (overloaded). Groq's free tier has historically been more
+    available than Gemini's, and its OpenAI-compatible chat completions API
+    makes this a small, self-contained addition rather than a rewrite.
+
+    Not used for the news-research call (which depends on Gemini's
+    google_search grounding tool) — only for the JSON-mode decision call,
+    where the caller already builds context/news into the prompt text itself.
+    """
+    body = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": max_output_tokens,
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+
+    last_error = None
+    n_keys = len(GROQ_KEYS)
+    for i, key in enumerate(GROQ_KEYS):
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=60,
+            )
+            if resp.status_code == 429 and i < n_keys - 1:
+                print(f"Groq key #{i + 1} hit a rate/quota limit (429), trying next key...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if i < n_keys - 1:
+                print(f"Groq key #{i + 1} failed ({e}), trying next key...")
+    raise last_error or RuntimeError("No Groq API keys configured")
+
+
 def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                       json_mode=True, max_output_tokens=2000) -> str:
     """
@@ -270,7 +322,19 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                 if not is_last_key:
                     print(f"Gemini key #{i + 1} failed ({e}), trying next key...")
                     break
+                if tools is None and GROQ_KEYS:
+                    print(f"All Gemini keys failed ({e}), falling back to Groq...")
+                    return _groq_generate(
+                        system_prompt, user_message,
+                        json_mode=json_mode, max_output_tokens=max_output_tokens,
+                    )
                 raise
+    if tools is None and GROQ_KEYS:
+        print(f"All Gemini keys failed ({last_error}), falling back to Groq...")
+        return _groq_generate(
+            system_prompt, user_message,
+            json_mode=json_mode, max_output_tokens=max_output_tokens,
+        )
     raise last_error or RuntimeError("No Gemini API keys configured")
 
 
