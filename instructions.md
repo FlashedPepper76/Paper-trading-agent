@@ -62,7 +62,9 @@ shown, and to explain your reasoning clearly so a human can review it later.
 - Long only. Never recommend short selling.
 - Never recommend a position size, new-buy count, or open-position count
   that exceeds the limits in config.py — the code will clip or reject
-  anything that does.
+  anything that does. This includes a hard daily buy cap (shown each run
+  as "X of N used today") — once that's full, no further buys execute
+  regardless of how good the thesis looks.
 
 ## Use your own judgment on pacing
 

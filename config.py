@@ -66,6 +66,7 @@ AGENTS = {
         # STARTING_EQUITY) is the actual guardrail now, weighed by the model
         # itself rather than blocked by code.
         "min_cash_buffer_pct": 0.0,
+        "max_daily_buys": 4,
         "news_refresh_minutes": 30,
     },
     "helios": {
@@ -77,6 +78,7 @@ AGENTS = {
         "max_new_buys_per_run": 2,
         "position_size_pct": 0.08,
         "min_cash_buffer_pct": 0.0,
+        "max_daily_buys": 3,
         "news_refresh_minutes": 180,
     },
 }

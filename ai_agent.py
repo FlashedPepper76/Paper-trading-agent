@@ -27,7 +27,7 @@ from alpaca.trading.enums import OrderSide
 
 import config
 import alpaca_client as ac
-from schedule import market_phase
+from schedule import market_phase, ET
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
@@ -152,6 +152,7 @@ def _build_context():
     cash = round(float(account.cash), 2)
     equity = round(float(account.equity), 2)
     minutes_since_buy = _minutes_since_last_buy()
+    buys_today = _buys_today()
 
     return {
         "account": {
@@ -165,6 +166,8 @@ def _build_context():
         "open_positions_count": len(held),
         "max_open_positions": config.AGENT["max_open_positions"],
         "minutes_since_last_buy": round(minutes_since_buy, 1) if minutes_since_buy is not None else None,
+        "buys_today": buys_today,
+        "max_daily_buys": config.AGENT["max_daily_buys"],
     }
 
 
@@ -392,6 +395,7 @@ def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "
   goal above, not a neutral act.
 - Open positions: {context['open_positions_count']} of {context['max_open_positions']} max
 - {pacing_line}
+- Daily buys: {context['buys_today']} of {context['max_daily_buys']} used today.
 None of the above blocks you — the code will stop you from exceeding the
 hard limits below, but everything in this section is judgment, not
 enforcement.
@@ -399,6 +403,7 @@ enforcement.
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
 - Max open positions at once: {config.AGENT['max_open_positions']}
 - Max new positions opened per run: {config.AGENT['max_new_buys_per_run']}
+- Max new buys per trading day: {config.AGENT['max_daily_buys']} ({context['buys_today']} used so far today)
 - Position size target: {config.AGENT['position_size_pct'] * 100:.0f}% of equity
 
 ## Output format
@@ -500,6 +505,34 @@ def _minutes_since_last_buy() -> float | None:
         return None
 
 
+def _buys_today() -> int:
+    """
+    Count of executed buys (order_id not null) placed by this agent today
+    (ET calendar date). Used to enforce max_daily_buys in _enforce_caps.
+    Returns 0 on any error so a Supabase blip doesn't block the run.
+    """
+    try:
+        today_et = datetime.now(ET).date()
+        midnight_et = datetime(today_et.year, today_et.month, today_et.day, tzinfo=ET)
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_decisions",
+            headers=_supabase_headers(),
+            params={
+                "agent_id": f"eq.{config.AGENT_ID}",
+                "action": "eq.buy",
+                "order_id": "not.is.null",
+                "created_at": f"gte.{midnight_et.isoformat()}",
+                "select": "id",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return len(resp.json())
+    except Exception as e:
+        print(f"Could not check today's buy count ({e}); not enforcing daily cap this run.")
+        return 0
+
+
 def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> list:
     """Returns the list of decisions actually allowed to execute, each
     annotated with an 'allowed' bool and a 'cap_note' if rejected/clipped."""
@@ -507,6 +540,8 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
     watchlist = context["watchlist"]
     equity = context["account"]["equity"]
     cash = context["account"]["cash"]
+    daily_cap = config.AGENT.get("max_daily_buys")
+    buys_today = context.get("buys_today", 0)
 
     open_count = len(held)
     new_buys = 0
@@ -547,6 +582,9 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
             elif new_buys >= config.AGENT["max_new_buys_per_run"]:
                 d["allowed"] = False
                 d["cap_note"] = "max new buys per run reached"
+            elif daily_cap is not None and (buys_today + new_buys) >= daily_cap:
+                d["allowed"] = False
+                d["cap_note"] = f"daily buy cap reached ({buys_today + new_buys}/{daily_cap} buys today)"
             else:
                 price = watchlist.get(symbol, {}).get("last_close")
                 if not price:

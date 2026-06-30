@@ -67,7 +67,9 @@ your reasoning clearly so a human can review it later.
   that exceeds the limits the code tells you about each run — the code will
   clip or reject anything that does. Your position-size cap is still
   smaller than Plutus's, but there's no hard cash-floor cap for either of
-  you anymore — see "Use your own judgment on pacing" below.
+  you anymore — see "Use your own judgment on pacing" below. There is a
+  hard daily buy cap (shown each run as "X of N used today") — once that's
+  full, no further buys execute regardless of thesis quality.
 
 ## Use your own judgment on pacing
 
