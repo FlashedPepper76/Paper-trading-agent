@@ -563,13 +563,31 @@ def _minutes_since_last_buy() -> float | None:
         return None
 
 
-def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> list:
+_FILL_PRICE_BUFFER = 1.02  # budget 2% above last_close for actual market fill price
+
+
+def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> list:
     """Returns the list of decisions actually allowed to execute, each
     annotated with an 'allowed' bool and a 'cap_note' if rejected/clipped."""
     held = set(context["held_positions"].keys())
     watchlist = context["watchlist"]
     equity = context["account"]["equity"]
     cash = context["account"]["cash"]
+    pending_buy_symbols = set(pending_buy_info.keys())
+
+    # Subtract cash already committed to pending (unfilled) buy orders.
+    # account.cash doesn't update until orders fill, so a pre-market run can
+    # queue orders and a subsequent run will see the same cash balance —
+    # committing the same dollars to different symbols and causing negative
+    # cash once everything fills. Deducting the estimated pending cost here
+    # prevents that double-spend.
+    pending_committed = 0.0
+    for sym, qty in pending_buy_info.items():
+        if sym in context["held_positions"]:
+            p = context["held_positions"][sym]["current_price"]
+        else:
+            p = watchlist.get(sym, {}).get("last_close", 0.0)
+        pending_committed += qty * p
 
     open_count = len(held)
     new_buys = 0
@@ -617,18 +635,15 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                     d["cap_note"] = "no price data available for this symbol this run"
                 else:
                     target_notional = equity * config.AGENT["position_size_pct"]
-                    # min_cash_buffer_pct now defaults to 0 for both agents —
-                    # there's no hard cash floor anymore, by design (see
-                    # config.py: the equity-vs-STARTING_EQUITY goal in the
-                    # prompt replaced it). This still computes a floor
-                    # generically in case that's ever changed back, and
-                    # importantly still sizes down to whatever's actually
-                    # available rather than rejecting outright just because
-                    # the *full* target size doesn't fit.
                     cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
-                    free_cash = max(0.0, cash - cash_floor)
+                    # Deduct pending-order commitments from available cash so
+                    # runs that follow a pre-market queue don't double-spend.
+                    free_cash = max(0.0, cash - cash_floor - pending_committed)
                     notional = min(target_notional, free_cash)
-                    qty = int(notional // price)
+                    # Apply a price buffer so the actual fill (at current market
+                    # price, which can be above last_close) fits within the
+                    # budgeted notional rather than pushing cash negative.
+                    qty = int(notional // (price * _FILL_PRICE_BUFFER))
                     if qty < 1:
                         d["allowed"] = False
                         d["cap_note"] = "insufficient cash for even 1 share at the sized notional"
@@ -639,7 +654,9 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_symbols: set) -> l
                         open_count += 1
                         new_buys += 1
                         new_buy_symbols_this_run.add(symbol)
-                        cash -= qty * price
+                        # Track estimated cash spend (with buffer) so subsequent
+                        # buys in this same run don't also over-commit.
+                        cash -= qty * price * _FILL_PRICE_BUFFER
         elif action == "hold":
             d["allowed"] = False
             d["cap_note"] = "hold (no action taken)"
@@ -912,7 +929,7 @@ def run():
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
-        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_symbols())
+        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_info())
         _execute(decisions)
 
         # Re-fetch fresh from Alpaca now that this run's own orders have been
@@ -983,7 +1000,7 @@ def run_premarket_review():
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
-        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_symbols())
+        decisions = _enforce_caps(decisions, context, ac.get_pending_buy_info())
         _execute(decisions)
 
         try:

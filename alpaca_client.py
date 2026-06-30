@@ -55,17 +55,32 @@ def get_open_positions() -> dict:
     return {p.symbol: p for p in trading_client.get_all_positions()}
 
 
-def get_pending_buy_symbols() -> set:
+def get_pending_buy_info() -> dict[str, float]:
     """
-    Symbols with a still-open (unfilled) buy order. A symbol can have a
-    pending order without yet showing up in get_open_positions() — e.g. an
-    order submitted while the market is technically open per the clock but
-    not actually trading (a force-run outside real session hours, a slow
-    fill, etc). Without this check, a duplicate buy for the same symbol can
-    slip through on a later run before the first order ever fills.
+    Returns {symbol: unfilled_qty} for open buy orders.
+
+    Used in two ways by _enforce_caps:
+    1. Block duplicate buys for the same symbol (same as the old
+       get_pending_buy_symbols() check).
+    2. Estimate how much cash is already committed to those pending orders
+       so that a new run doesn't double-spend the same dollars — the most
+       common cause of negative cash is a pre-market run queuing orders and
+       a market-open run seeing the same account.cash (fills haven't landed
+       yet) and committing it again to different symbols.
     """
     open_orders = trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
-    return {o.symbol for o in open_orders if o.side == OrderSide.BUY}
+    result = {}
+    for o in open_orders:
+        if o.side != OrderSide.BUY or not o.qty:
+            continue
+        unfilled = float(o.qty) - float(o.filled_qty or 0)
+        if unfilled > 0:
+            result[o.symbol] = unfilled
+    return result
+
+
+def get_pending_buy_symbols() -> set:
+    return set(get_pending_buy_info().keys())
 
 
 def get_recent_bars(symbols: list[str], lookback_days: int = 60) -> dict:
