@@ -1,0 +1,52 @@
+name: Dynamic Agent Trading Bot
+
+on:
+  # Triggered by a Supabase pg_cron job created automatically when a new
+  # agent is registered via the dashboard's "Add agent" flow (see the
+  # register_agent() Postgres function + agents_register_cron trigger in
+  # the life-dashboard Supabase project). Same dispatch mechanism as
+  # trade.yml/trade_helios.yml, just shared across every dynamically-added
+  # agent instead of one workflow file per agent — agent_id picks which
+  # secrets and config this run uses.
+  workflow_dispatch:
+    inputs:
+      agent_id:
+        description: "Agent ID (matches the 'id' column in the agents table)"
+        required: true
+      source:
+        description: "Internal: set to 'schedule' by the Supabase cron caller. Leave blank for a manual run."
+        required: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run trading bot (dynamic agent)
+        env:
+          AGENT_ID: ${{ inputs.agent_id }}
+          RUN_TRIGGER: ${{ inputs.source || github.event_name }}
+          # Per-agent secrets follow a "_<agent_id>" suffix convention (e.g.
+          # agent_id "atlas" -> secret ALPACA_API_KEY_atlas). GitHub treats
+          # secret names as case-insensitive when referenced (it stores them
+          # uppercased internally regardless of how they're created), so
+          # this matches whether the agent_id or the stored secret name is
+          # upper, lower, or mixed case. Set when the agent is created (the
+          # dashboard's add-agent flow does this via the GitHub API).
+          ALPACA_API_KEY: ${{ secrets[format('ALPACA_API_KEY_{0}', inputs.agent_id)] }}
+          ALPACA_SECRET_KEY: ${{ secrets[format('ALPACA_SECRET_KEY_{0}', inputs.agent_id)] }}
+          GEMINI_API_KEY: ${{ secrets[format('GEMINI_API_KEY_{0}', inputs.agent_id)] }}
+          GEMINI_API_KEY_2: ${{ secrets[format('GEMINI_API_KEY_{0}_2', inputs.agent_id)] }}
+          GROQ_API_KEY: ${{ secrets[format('GROQ_API_KEY_{0}', inputs.agent_id)] }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
+        run: python main.py

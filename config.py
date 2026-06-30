@@ -99,9 +99,65 @@ AGENTS = {
 }
 
 AGENT_ID = os.environ.get("AGENT_ID", "plutus")
-if AGENT_ID not in AGENTS:
-    raise ValueError(f"Unknown AGENT_ID '{AGENT_ID}' — expected one of {list(AGENTS)}")
-AGENT = AGENTS[AGENT_ID]
+
+
+def _load_dynamic_agent(agent_id: str) -> dict:
+    """
+    Agents created through the dashboard's "Add agent" flow aren't hardcoded
+    above — they live in the `agents` Supabase table instead, so adding one
+    doesn't require touching this file or redeploying. Only called when
+    AGENT_ID isn't one of the hardcoded entries in AGENTS.
+
+    Unlike instructions (which fall back to a local file if Supabase is
+    unreachable), there's no local fallback here — a dynamic agent only
+    exists in Supabase, so a failed lookup is a real failure, not something
+    to silently paper over.
+    """
+    import requests  # local import: keep this off the hot path for the two hardcoded agents
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise ValueError(
+            f"Unknown AGENT_ID '{agent_id}' (not one of {list(AGENTS)}), and "
+            "SUPABASE_URL/SUPABASE_KEY aren't set to look it up dynamically."
+        )
+
+    resp = requests.get(
+        f"{supabase_url}/rest/v1/agents",
+        headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
+        params={"id": f"eq.{agent_id}", "active": "eq.true", "select": "*"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        raise ValueError(
+            f"Unknown AGENT_ID '{agent_id}' — not hardcoded in config.py and no "
+            "active row for it in the agents table."
+        )
+    row = rows[0]
+    return {
+        "label": row["label"],
+        "universe": row["universe"],
+        "gemini_model": row.get("gemini_model") or "gemini-3.1-flash-lite",
+        # Dynamic agents have no local .md fallback — _load_instructions()
+        # requires the Supabase agent_instructions row to exist for these.
+        "instructions_file": None,
+        "max_open_positions": None,
+        "max_new_buys_per_run": int(row.get("max_new_buys_per_run", 2)),
+        "position_size_pct_min": float(row.get("position_size_pct_min", 0.04)),
+        "position_size_pct_max": float(row.get("position_size_pct_max", 0.15)),
+        "min_cash_buffer_pct": float(row.get("min_cash_buffer_pct", 0.0)),
+        "news_refresh_minutes": int(row.get("news_refresh_minutes", 60)),
+    }
+
+
+if AGENT_ID in AGENTS:
+    AGENT = AGENTS[AGENT_ID]
+else:
+    AGENT = _load_dynamic_agent(AGENT_ID)
+    AGENTS[AGENT_ID] = AGENT
 
 # --------------------------------------------------------------------------
 # Settings shared by every agent

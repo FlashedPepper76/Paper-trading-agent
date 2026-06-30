@@ -179,7 +179,10 @@ def _load_instructions() -> str:
     Instructions live in Supabase (agent_instructions table, keyed by
     agent_id) so they can be edited from the dashboard per-agent. Falls
     back to the active agent's local instructions file if the Supabase read
-    fails for any reason, so a bad network blip never takes the run down.
+    fails for any reason, so a bad network blip never takes the run down —
+    except for dynamically-added agents (instructions_file is None for
+    those), which have no local file to fall back to and so require the
+    Supabase read to succeed.
     """
     try:
         resp = requests.get(
@@ -195,7 +198,15 @@ def _load_instructions() -> str:
     except Exception as e:
         print(f"Could not load instructions from Supabase ({e}), falling back to local file.")
 
-    with open(config.AGENT["instructions_file"], "r") as f:
+    instructions_file = config.AGENT.get("instructions_file")
+    if not instructions_file:
+        raise RuntimeError(
+            f"No instructions available for agent '{config.AGENT_ID}': the Supabase "
+            "agent_instructions read failed or returned nothing, and this agent has "
+            "no local instructions file to fall back to (dynamically-added agents "
+            "depend on the Supabase row existing)."
+        )
+    with open(instructions_file, "r") as f:
         return f.read()
 
 

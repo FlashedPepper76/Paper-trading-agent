@@ -1,0 +1,33 @@
+name: Dynamic Agent Account Snapshot (no AI, Alpaca-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_id:
+        description: "Agent ID (matches the 'id' column in the agents table)"
+        required: true
+      source:
+        description: "Internal: set to 'schedule' by the Supabase cron caller. Leave blank for a manual run."
+        required: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull account snapshot from Alpaca (dynamic agent)
+        env:
+          AGENT_ID: ${{ inputs.agent_id }}
+          ALPACA_API_KEY: ${{ secrets[format('ALPACA_API_KEY_{0}', inputs.agent_id)] }}
+          ALPACA_SECRET_KEY: ${{ secrets[format('ALPACA_SECRET_KEY_{0}', inputs.agent_id)] }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python snapshot.py
