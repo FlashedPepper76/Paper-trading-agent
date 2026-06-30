@@ -462,7 +462,13 @@ enforcement.
 ## Hard limits enforced in code (for your awareness — you don't need to do this math)
 - {f"Max open positions at once: {config.AGENT['max_open_positions']}" if config.AGENT['max_open_positions'] is not None else "No cap on number of open positions — sizing and pacing are the controls"}
 - Max new positions opened per run: {config.AGENT['max_new_buys_per_run']}
-- Position size target: {config.AGENT['position_size_pct'] * 100:.0f}% of equity
+- Position sizing: {config.AGENT['position_size_pct_min'] * 100:.0f}%–{config.AGENT['position_size_pct_max'] * 100:.0f}%
+  of equity per buy. This is a range, not a fixed amount — size each buy
+  yourself within it based on how strongly you believe in it. A high-
+  conviction idea can sit near the top of the range; something you're
+  taking a smaller swing on can sit near the bottom. The code only clamps
+  you to the range if you go outside it — it does not pick the number for
+  you, and there's no requirement that positions end up similar sizes.
 
 ## Output format
 Respond with ONLY valid JSON, no markdown fences, no other text, matching
@@ -471,13 +477,15 @@ exactly this shape:
 {{
   "overall_reasoning": "1-3 sentences on your overall read of the portfolio/market this run",
   "decisions": [
-    {{"symbol": "AAPL", "action": "buy|sell|hold", "qty": 1, "confidence": "low|medium|high", "reasoning": "why"}}
+    {{"symbol": "AAPL", "action": "buy|sell|hold", "size_pct": 0.10, "confidence": "low|medium|high", "reasoning": "why"}}
   ]
 }}
 
 Only include symbols you want to take action on (buy or sell). You don't
-need to list every "hold" — omitting a symbol means hold/no action. qty is
-only required for buy/sell.
+need to list every "hold" — omitting a symbol means hold/no action.
+size_pct is only used for "buy" (your conviction-sized fraction of equity,
+see the range above) and is ignored for "sell"/"hold" — a sell always
+closes the full existing position.
 """
 
     news_block = (
@@ -634,7 +642,22 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                     d["allowed"] = False
                     d["cap_note"] = "no price data available for this symbol this run"
                 else:
-                    target_notional = equity * config.AGENT["position_size_pct"]
+                    min_pct = config.AGENT["position_size_pct_min"]
+                    max_pct = config.AGENT["position_size_pct_max"]
+                    requested_pct = d.get("size_pct")
+                    if isinstance(requested_pct, (int, float)) and requested_pct > 0:
+                        # Clamp, don't reject — the model gets credit for
+                        # picking a size, code just keeps it in-band rather
+                        # than silently substituting its own number.
+                        size_pct = max(min_pct, min(max_pct, requested_pct))
+                    else:
+                        # No usable size from the model this run — fall
+                        # back to the midpoint of its own range rather than
+                        # defaulting to the top (most risk) or bottom
+                        # (most timid) on its behalf.
+                        size_pct = (min_pct + max_pct) / 2
+                    d["size_pct_used"] = round(size_pct, 4)
+                    target_notional = equity * size_pct
                     cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
                     # Deduct pending-order commitments from available cash so
                     # runs that follow a pre-market queue don't double-spend.

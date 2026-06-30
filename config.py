@@ -60,13 +60,21 @@ AGENTS = {
         "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions.md",
         # No hard cap on open positions — removed per Carter's request
-        # (2026-06-30). Position sizing (position_size_pct) and max new
-        # buys per run remain the real risk controls; an open-position
-        # count limit was redundant with those and just blocked good
-        # opportunities once the portfolio happened to be diversified.
+        # (2026-06-30). Position sizing (position_size_pct_min/_max) and
+        # max new buys per run remain the real risk controls; an open-
+        # position count limit was redundant with those and just blocked
+        # good opportunities once the portfolio happened to be diversified.
         "max_open_positions": None,
         "max_new_buys_per_run": 3,
-        "position_size_pct": 0.12,
+        # A range, not a fixed number — the model picks where in this band
+        # to size each buy based on its own conviction (see size_pct in the
+        # decision schema in ai_agent.py). Code only clamps to the range;
+        # it doesn't pick the number. Replaces the old single
+        # position_size_pct, which forced every buy to the same fraction
+        # of equity regardless of how strongly the model felt about it,
+        # producing artificially even position sizes across the portfolio.
+        "position_size_pct_min": 0.04,
+        "position_size_pct_max": 0.18,
         # 0 = no hard cash-floor cap. It can deploy all of its cash if it has
         # a real reason to — the equity-floor goal (stay above
         # STARTING_EQUITY) is the actual guardrail now, weighed by the model
@@ -81,7 +89,10 @@ AGENTS = {
         "instructions_file": "instructions_helios.md",
         "max_open_positions": None,
         "max_new_buys_per_run": 2,
-        "position_size_pct": 0.08,
+        # Tighter range than Plutus, consistent with capital-preservation —
+        # but still a range the model sizes within, not one fixed number.
+        "position_size_pct_min": 0.03,
+        "position_size_pct_max": 0.10,
         "min_cash_buffer_pct": 0.0,
         "news_refresh_minutes": 180,
     },
