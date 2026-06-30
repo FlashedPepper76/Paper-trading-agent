@@ -70,7 +70,7 @@ def _yesterday_recap() -> str:
     covers that if anyone wants to read it later.
     """
     try:
-        since = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/trading_agent_decisions",
             headers=_supabase_headers(),

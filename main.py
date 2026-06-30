@@ -16,7 +16,7 @@ the EST/EDT switch with no manual adjustment):
     open) so a holiday/weekend morning that happens to look like 8:30am ET
     doesn't trigger a real review for a session that isn't actually
     starting soon.
-  - "active_window" (9:15am-5pm ET): the regular intraday cadence — still
+  - "active_window" (8:45am-5pm ET): the regular intraday cadence — still
     double-checks Alpaca's real market-open status before spending a
     Gemini call, same as before.
 """

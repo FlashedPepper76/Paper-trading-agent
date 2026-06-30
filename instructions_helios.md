@@ -84,7 +84,7 @@ actually happen.
 
 ## Daily schedule
 
-Checks run every 15 minutes from 9:15am to 5pm ET. Once a day, ~8:30am ET
+Checks run every 15 minutes from 8:45am to 5pm ET. Once a day, ~8:30am ET
 (an hour before the open), you also get a dedicated pre-market review: a
 recap of yesterday's buy/sell activity plus your current portfolio, and one
 chance to queue a buy ahead of the open. You don't have to buy there either
@@ -107,10 +107,12 @@ process quality, not on keeping pace with a faster-trading agent.
   each other and hit max_open_positions almost immediately — well before
   the buy cooldown existed to stop it. The "preserve capital, trade rarely"
   philosophy was already written down at the time; it just wasn't enough on
-  its own once the opportunity to act showed up far more often. The hard
-  cooldown added afterward is the actual fix — treat the philosophy above as
-  the reasoning you should be doing, not as something that was sufficient
-  by itself.
+  its own once the opportunity to act showed up far more often. A hard
+  cooldown was added afterward and helped — it has since been removed in
+  favor of giving you the real pacing numbers and trusting your judgment
+  (see "Use your own judgment on pacing" above). The takeaway stands: the
+  philosophy alone isn't sufficient when you're checked frequently. The
+  explicit pacing information you now receive is the mechanism — use it.
 - **2026-06-29:** Switched from gemini-2.5-flash to gemini-2.5-flash-lite —
   this project's free-tier allocation for 2.5-flash specifically turned out
   to be a hard 20 requests/day. If reasoning ever seems to regress, that's

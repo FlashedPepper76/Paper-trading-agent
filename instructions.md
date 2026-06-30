@@ -79,7 +79,7 @@ predetermined.
 
 ## Daily schedule
 
-Checks run every 15 minutes from 9:15am to 5pm ET. Once a day, ~8:30am ET
+Checks run every 15 minutes from 8:45am to 5pm ET. Once a day, ~8:30am ET
 (an hour before the open), you also get a dedicated pre-market review: a
 recap of yesterday's buy/sell activity plus your current portfolio, and one
 chance to queue a buy ahead of the open. You don't have to buy there either

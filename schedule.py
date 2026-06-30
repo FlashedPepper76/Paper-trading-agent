@@ -21,9 +21,9 @@ def market_phase(now_utc: datetime | None = None) -> str:
       - "pre_market_review": 8:30-8:45am ET — the once-daily pre-open
         review window. A 15-minute slot, not "anytime before open," so a
         15-minute-grid cron produces exactly one tick here per day.
-      - "active_window": 9:15am-5pm ET — the regular intraday cadence,
-        covering market hours plus a short pre-open buffer (15 min) and a
-        1-hour post-close buffer.
+      - "active_window": 8:45am-5pm ET — the regular intraday cadence,
+        starting right when the pre-market review window closes, covering
+        the pre-open gap, market hours, and a 1-hour post-close buffer.
       - "quiet": everything else — true overnight pause, nothing should
         run at all during this phase.
 
@@ -35,6 +35,6 @@ def market_phase(now_utc: datetime | None = None) -> str:
     t = now_et.time()
     if time_of_day(8, 30) <= t < time_of_day(8, 45):
         return "pre_market_review"
-    if time_of_day(9, 15) <= t < time_of_day(17, 0):
+    if time_of_day(8, 45) <= t < time_of_day(17, 0):
         return "active_window"
     return "quiet"
