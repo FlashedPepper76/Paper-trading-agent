@@ -127,11 +127,37 @@ function pickInterval(period1Sec, period2Sec) {
 async function fetchBenchmarkSeries(symbol, rangeStartMs, rangeEndMs) {
   const period1 = Math.floor(rangeStartMs / 1000) - 86400;
   const period2 = Math.floor(rangeEndMs / 1000);
-  const interval = pickInterval(period1, period2);
 
-  // query1 sometimes requires a crumb on newer iOS; try query2 as fallback.
-  const hosts = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"];
-  for (const host of hosts) {
+  // ---- stooq.com (primary) ----
+  // Returns CSV: Date,Open,High,Low,Close,Volume — reliable from iOS.
+  try {
+    const fmt = (sec) => {
+      const d = new Date(sec * 1000);
+      return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,"0")}${String(d.getUTCDate()).padStart(2,"0")}`;
+    };
+    const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol.toLowerCase())}.us&d1=${fmt(period1)}&d2=${fmt(period2)}&i=d`;
+    const req = new Request(url);
+    req.headers = { "User-Agent": "Mozilla/5.0 (compatible; CommandDeckWidget/1.0)" };
+    const csv = await req.loadString();
+    if (csv && !csv.trim().startsWith("No data") && csv.trim().length > 20) {
+      const lines = csv.trim().split("\n");
+      const points = [];
+      for (const line of lines.slice(1)) {
+        const cols = line.split(",");
+        if (cols.length < 5) continue;
+        const t = new Date(cols[0].trim() + "T12:00:00Z").getTime();
+        const c = parseFloat(cols[4]);
+        if (!isNaN(t) && !isNaN(c)) points.push({ t, close: c });
+      }
+      if (points.length > 1) return points;
+    }
+  } catch (e) {
+    console.error("stooq fetch failed: " + e);
+  }
+
+  // ---- Yahoo Finance (fallback) ----
+  const interval = pickInterval(period1, period2);
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
     try {
       const url =
         `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}` +
@@ -144,28 +170,23 @@ async function fetchBenchmarkSeries(symbol, rangeStartMs, rangeEndMs) {
         Accept: "application/json",
       };
       const json = await req.loadJSON();
-      const result =
-        json && json.chart && json.chart.result && json.chart.result[0];
+      const result = json && json.chart && json.chart.result && json.chart.result[0];
       if (!result) continue;
       const timestamps = result.timestamp || [];
       const closes =
-        (result.indicators &&
-          result.indicators.quote &&
-          result.indicators.quote[0] &&
-          result.indicators.quote[0].close) ||
-        [];
+        (result.indicators && result.indicators.quote &&
+         result.indicators.quote[0] && result.indicators.quote[0].close) || [];
       const points = [];
       for (let i = 0; i < timestamps.length; i++) {
         const c = closes[i];
-        if (c == null) continue;
-        points.push({ t: timestamps[i] * 1000, close: c });
+        if (c != null) points.push({ t: timestamps[i] * 1000, close: c });
       }
-      if (points.length > 1) return points; // success — stop trying hosts
+      if (points.length > 1) return points;
     } catch (e) {
-      console.error(`benchmark fetch failed on ${host}: ${e}`);
+      console.error(`Yahoo ${host} failed: ${e}`);
     }
   }
-  return []; // all hosts failed
+  return [];
 }
 
 // --------------------------------------------------------------------------
@@ -436,18 +457,14 @@ async function buildComparisonWidget(w, family) {
   if (family !== "small") {
     w.addSpacer(6);
 
-    // Date range uses only agents with enough history for a meaningful chart
-    // line. Hermes is excluded until it accumulates MIN_CHART_RUNS runs —
-    // its 18-point line would look flat and visually misleading next to
-    // Plutus/Helios which have 100+ runs. Also keeps the VTI benchmark
-    // anchored to when the established agents started, not today.
-    const MIN_CHART_RUNS = 50;
-    const chartHistories = [
-      plutusHistory.length >= MIN_CHART_RUNS ? plutusHistory : null,
-      heliosHistory.length >= MIN_CHART_RUNS ? heliosHistory : null,
-    ].filter(Boolean);
-
-    const allTimes = chartHistories
+    // VTI date range anchored to established agents (50+ runs) so a brand-new
+    // agent doesn't shift the benchmark start to today. All agents are still
+    // drawn in the chart regardless of run count.
+    const MIN_BENCHMARK_RUNS = 50;
+    const anchorHistories = [plutusHistory, heliosHistory, hermesHistory]
+      .filter((h) => h.length >= MIN_BENCHMARK_RUNS);
+    const rangeSource = anchorHistories.length ? anchorHistories : [plutusHistory, heliosHistory, hermesHistory];
+    const allTimes = rangeSource
       .flatMap((h) => h.map((r) => new Date(r.run_at).getTime()))
       .filter((t) => !isNaN(t));
     const rangeStartMs = allTimes.length
@@ -464,7 +481,6 @@ async function buildComparisonWidget(w, family) {
       benchmarkPct = [];
     }
 
-    // Slightly shorter chart in medium to absorb the extra Hermes row above.
     const chartWidth  = family === "large" ? 290 : 260;
     const chartHeight = family === "large" ? 80  : 48;
 
@@ -472,31 +488,18 @@ async function buildComparisonWidget(w, family) {
     if (benchmarkPct.length >= 2) {
       series.push({ points: benchmarkPct, color: BENCHMARK_COLOR, lineWidth: 1.5, dashed: true });
     }
-    if (plutusHistory.length >= MIN_CHART_RUNS) {
-      series.push({ points: plutusPct, color: AGENT_COLORS.plutus, lineWidth: 2 });
-    }
-    if (heliosHistory.length >= MIN_CHART_RUNS) {
-      series.push({ points: heliosPct, color: AGENT_COLORS.helios, lineWidth: 2 });
-    }
-    if (hermesHistory.length >= MIN_CHART_RUNS) {
-      series.push({ points: hermesPct, color: AGENT_COLORS.hermes, lineWidth: 2 });
-    }
+    if (plutusPct.length >= 2) series.push({ points: plutusPct, color: AGENT_COLORS.plutus, lineWidth: 2 });
+    if (heliosPct.length >= 2) series.push({ points: heliosPct, color: AGENT_COLORS.helios, lineWidth: 2 });
+    if (hermesPct.length >= 2) series.push({ points: hermesPct, color: AGENT_COLORS.hermes, lineWidth: 2 });
 
     const image = drawComparisonChart(series, chartWidth, chartHeight);
     if (image) {
       const iw = w.addImage(image);
       iw.imageSize = new Size(chartWidth, chartHeight);
     }
-
-    const chartAgentNames = [
-      plutusHistory.length >= MIN_CHART_RUNS ? "white=Plutus" : null,
-      heliosHistory.length >= MIN_CHART_RUNS ? "gray=Helios" : null,
-      hermesHistory.length >= MIN_CHART_RUNS ? "green=Hermes" : null,
-    ].filter(Boolean);
     const caption = w.addText(
-      chartAgentNames.length
-        ? chartAgentNames.join("  ") + (benchmarkPct.length >= 2 ? "  dashed=VTI" : "")
-        : "full history · % change from start"
+      "white=Plutus  gray=Helios  green=Hermes" +
+      (benchmarkPct.length >= 2 ? "  dashed=VTI" : "")
     );
     caption.font = Font.systemFont(8);
     caption.textColor = new Color("#475569");
