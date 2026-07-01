@@ -7,9 +7,12 @@ dashboard can show near-real-time numbers without that freshness being
 coupled to how often the (deliberately slower, Gemini-rate-limited) AI
 decision cycle runs.
 
-Triggered every minute during market hours by its own Supabase pg_cron job
-+ GitHub Actions workflow (snapshot_plutus.yml / snapshot_helios.yml) —
-independent of trade.yml / trade_helios.yml's 15-minute cadence.
+Triggered every minute during and around market hours by its own Supabase
+pg_cron job + GitHub Actions workflow. Deliberately does NOT check
+market_phase() — the snapshot has no AI/API cost, so there's no reason to
+gate it. Running during pre-market and after-hours is the whole point: it
+keeps equity current through extended-hours price moves so the dashboard
+always matches what Alpaca shows.
 """
 import os
 from datetime import datetime, timezone
@@ -18,7 +21,6 @@ import requests
 
 import alpaca_client as ac
 import config
-from schedule import market_phase
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -36,12 +38,6 @@ def _headers(extra_prefer: str = "") -> dict:
 
 
 def main():
-    phase = market_phase()
-    if phase == "quiet":
-        print(f"Phase: {phase} — overnight pause, skipping the snapshot pull entirely.")
-        return
-    print(f"Phase: {phase}")
-
     account = ac.get_account()
     positions = ac.get_open_positions()
 
