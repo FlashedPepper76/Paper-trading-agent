@@ -337,8 +337,60 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
 # News / market research (cached per agent)
 # --------------------------------------------------------------------------
 
+def _fetch_reddit_posts() -> str:
+    """
+    Pulls hot posts from stock/trading subreddits via Reddit's public JSON
+    API (no auth required for public subs). Returns a formatted block of the
+    most-upvoted, non-stickied posts to be prepended to the news research
+    prompt as real-time retail sentiment context.
+
+    Best-effort — a Reddit outage or rate-limit should never block a run.
+    """
+    subreddits = config.AGENT.get("reddit_subreddits", [])
+    if not subreddits:
+        return ""
+
+    headers = {"User-Agent": "trading-agent-hermes/1.0 (paper trading research bot)"}
+    lines = []
+    for sub in subreddits:
+        try:
+            resp = requests.get(
+                f"https://www.reddit.com/r/{sub}/hot.json",
+                params={"limit": 8},
+                headers=headers,
+                timeout=8,
+            )
+            if not resp.ok:
+                print(f"Reddit r/{sub}: HTTP {resp.status_code}, skipping.")
+                continue
+            posts = resp.json().get("data", {}).get("children", [])
+            for post in posts:
+                p = post.get("data", {})
+                if p.get("stickied"):   # skip mod announcements
+                    continue
+                title = p.get("title", "").strip()
+                score = p.get("score", 0)
+                n_comments = p.get("num_comments", 0)
+                if title:
+                    lines.append(f"r/{sub} | ↑{score} | {n_comments} comments | {title}")
+        except Exception as e:
+            print(f"Reddit r/{sub} fetch failed ({e}), skipping.")
+
+    if not lines:
+        return ""
+    return (
+        "## Reddit retail sentiment (hot posts right now)\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _research_news_gemini() -> str:
-    """News research via Gemini with google_search grounding (Plutus/Helios)."""
+    """News research via Gemini with google_search grounding (all Gemini-backed agents).
+    For agents with reddit_subreddits configured (Hermes), Reddit hot posts are
+    prepended so Gemini synthesizes retail sentiment alongside live web news."""
+    reddit_block = _fetch_reddit_posts()
+
     symbols = ", ".join(config.AGENT["universe"])
     system_prompt = (
         "You are a markets research assistant. Use Google Search to find what is "
@@ -358,12 +410,22 @@ def _research_news_gemini() -> str:
         "short plain-text bullet-style lines (no markdown headers, no asterisks). "
         "If nothing notable turned up in a section, say so in one line."
     )
+
+    user_message = "Research current market-relevant news, politics, and societal trends now."
+    if reddit_block:
+        user_message = (
+            "Here is real-time retail sentiment from Reddit trading communities "
+            "to factor into your research:\n\n"
+            + reddit_block
+            + "\nNow research current market-relevant news, politics, and societal trends."
+        )
+
     text = _gemini_generate(
         system_prompt,
-        "Research current market-relevant news, politics, and societal trends now.",
+        user_message,
         tools=[{"google_search": {}}],
         json_mode=False,
-        max_output_tokens=700,
+        max_output_tokens=800,
     )
     return text.strip()
 

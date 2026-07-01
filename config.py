@@ -143,6 +143,10 @@ AGENTS = {
         # Refresh news on every run — Hermes runs every 15 min and the whole
         # point is to react to fresh news, so stale context is counterproductive.
         "news_refresh_minutes": 15,
+        # Reddit subreddits to scrape for retail sentiment on each news refresh.
+        # Hot posts are prepended to the Gemini news research prompt so the model
+        # can factor in what retail traders are actually talking about right now.
+        "reddit_subreddits": ["daytrading", "wallstreetbets", "stocks", "StockMarket", "options"],
         # Hermes paper account started at $10k (not $100k like Plutus/Helios).
         # The dashboard displays this as ×10 for apples-to-apples comparison.
         "starting_equity": 10_000.0,

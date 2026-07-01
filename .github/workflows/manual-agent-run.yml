@@ -11,6 +11,7 @@ on:
         options:
           - plutus
           - helios
+          - hermes
       mode:
         description: "run = normal forced run, premarket = test the pre-market review"
         required: false
@@ -38,11 +39,11 @@ jobs:
           AGENT_ID: ${{ inputs.agent_id }}
           RUN_MODE: ${{ inputs.mode }}
           RUN_TRIGGER: ${{ github.event_name }}
-          ALPACA_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
-          GEMINI_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS || secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS_2 || secrets.GEMINI_API_KEY_2 }}
-          GROQ_API_KEY: ${{ inputs.agent_id == 'helios' && secrets.GROQ_API_KEY_HELIOS || secrets.GROQ_API_KEY }}
+          ALPACA_API_KEY: ${{ inputs.agent_id == 'hermes' && secrets.ALPACA_API_KEY_HERMES || inputs.agent_id == 'helios' && secrets.ALPACA_API_KEY_HELIOS || secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ inputs.agent_id == 'hermes' && secrets.ALPACA_SECRET_KEY_HERMES || inputs.agent_id == 'helios' && secrets.ALPACA_SECRET_KEY_HELIOS || secrets.ALPACA_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ inputs.agent_id == 'hermes' && secrets.GEMINI_API_KEY_HERMES || inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS || secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ inputs.agent_id == 'hermes' && secrets.GEMINI_API_KEY_HERMES_2 || inputs.agent_id == 'helios' && secrets.GEMINI_API_KEY_HELIOS_2 || secrets.GEMINI_API_KEY_2 }}
+          GROQ_API_KEY: ${{ inputs.agent_id == 'hermes' && secrets.GROK_API_KEY_2 || inputs.agent_id == 'helios' && secrets.GROQ_API_KEY_HELIOS || secrets.GROQ_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
