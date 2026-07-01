@@ -230,7 +230,8 @@ else:
 # --------------------------------------------------------------------------
 # Settings shared by every agent
 # --------------------------------------------------------------------------
-LOOKBACK_DAYS = 30          # days of price history shown to the agent per symbol
+LOOKBACK_DAYS = 60          # days of price history shown to the agent per symbol (60 needed for SMA-50)
 
 # Push notifications — fired on executed trades and on run failures.
 NOTIFY_URL = "https://trading-agent-dashboard-mu.vercel.app/api/notify"
+
