@@ -140,8 +140,12 @@ AGENTS = {
         "position_size_pct_min": 0.05,
         "position_size_pct_max": 0.15,
         "min_cash_buffer_pct": 0.0,
-        # Refresh news on every run — Hermes runs every 15 min and the whole
-        # point is to react to fresh news, so stale context is counterproductive.
+        # Fractional/notional orders: Alpaca supports notional market orders
+        # (e.g. "buy $500 of NVDA") which fills fractional shares automatically.
+        # Enabled for Hermes because its $10k equity makes whole-share rounding
+        # waste a meaningful % of each position. Only applies to market buys —
+        # limit orders still use integer qty to preserve GTC capability.
+        "use_notional": True,
         "news_refresh_minutes": 15,
         # Reddit subreddits to scrape for retail sentiment on each news refresh.
         # Hot posts are prepended to the Gemini news research prompt so the model

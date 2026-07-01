@@ -821,33 +821,48 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                     d["size_pct_used"] = round(size_pct, 4)
                     target_notional = equity * size_pct
 
-                    # For market buys apply a 2% fill-price buffer; limit buys
-                    # fill at exactly limit_price so no buffer needed.
-                    fill_buffer = 1.0 if order_type == "limit" else _FILL_PRICE_BUFFER
-                    notional = min(target_notional, available_cash)
-                    qty = int(notional // (price * fill_buffer))
+                    use_notional = config.AGENT.get("use_notional", False) and order_type == "market"
 
-                    if qty < 1:
-                        d["allowed"] = False
-                        d["cap_note"] = "insufficient cash for even 1 share at the sized notional"
-                    else:
-                        committed = qty * price * fill_buffer
-                        # Hard stop: never let available_cash go negative
-                        if committed > available_cash:
-                            qty = int(available_cash // (price * fill_buffer))
-                        if qty < 1:
+                    if use_notional:
+                        # Notional (fractional) buy: send Alpaca a dollar amount
+                        # and let it fill the exact fractional qty. No integer
+                        # rounding or fill-price buffer — Alpaca handles it.
+                        notional_to_spend = round(min(target_notional, available_cash), 2)
+                        if notional_to_spend < 1.0:
                             d["allowed"] = False
-                            d["cap_note"] = "insufficient cash for even 1 share (hard cash floor enforced)"
+                            d["cap_note"] = "insufficient cash for $1 minimum notional order"
                         else:
-                            d["qty"] = qty
-                            d["entry_price"] = price
+                            d["notional_order"] = notional_to_spend
+                            d["entry_price"] = round(price, 2)  # estimated, for logging
                             d["allowed"] = True
                             open_count += 1
                             new_buys += 1
                             new_buy_symbols_this_run.add(symbol)
-                            # Deduct from running available_cash so the next
-                            # buy in this same run sees the reduced balance.
-                            available_cash -= qty * price * fill_buffer
+                            available_cash -= notional_to_spend
+                    else:
+                        # Integer-qty buy (Plutus, Helios, Hermes limit buys)
+                        fill_buffer = 1.0 if order_type == "limit" else _FILL_PRICE_BUFFER
+                        notional = min(target_notional, available_cash)
+                        qty = int(notional // (price * fill_buffer))
+
+                        if qty < 1:
+                            d["allowed"] = False
+                            d["cap_note"] = "insufficient cash for even 1 share at the sized notional"
+                        else:
+                            committed = qty * price * fill_buffer
+                            if committed > available_cash:
+                                qty = int(available_cash // (price * fill_buffer))
+                            if qty < 1:
+                                d["allowed"] = False
+                                d["cap_note"] = "insufficient cash for even 1 share (hard cash floor enforced)"
+                            else:
+                                d["qty"] = qty
+                                d["entry_price"] = price
+                                d["allowed"] = True
+                                open_count += 1
+                                new_buys += 1
+                                new_buy_symbols_this_run.add(symbol)
+                                available_cash -= qty * price * fill_buffer
         elif action == "hold":
             d["allowed"] = False
             d["cap_note"] = "hold (no action taken)"
@@ -873,9 +888,13 @@ def _execute(decisions: list):
         try:
             order_type = d.get("order_type", "market").lower()
             limit_price = d.get("limit_price")
+            notional_order = d.get("notional_order")
             if d["action"] == "buy":
                 qty = d.get("qty", 1)
-                if order_type == "limit" and limit_price:
+                if notional_order:
+                    # Fractional/notional market buy (Hermes)
+                    result = ac.submit_market_order(d["symbol"], notional_order, OrderSide.BUY)
+                elif order_type == "limit" and limit_price:
                     result = ac.submit_limit_order(d["symbol"], qty, OrderSide.BUY, limit_price)
                 else:
                     result = ac.submit_qty_order(d["symbol"], qty, OrderSide.BUY)
