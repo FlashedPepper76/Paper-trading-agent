@@ -121,6 +121,9 @@ def _symbol_stats(symbol: str, bars) -> dict | None:
     if not bars:
         return None
     closes = [b.close for b in bars]
+    highs  = [b.high  for b in bars]
+    lows   = [b.low   for b in bars]
+    volumes = [b.volume for b in bars]
     if len(closes) < 2:
         return None
 
@@ -132,12 +135,89 @@ def _symbol_stats(symbol: str, bars) -> dict | None:
         prior = closes[-1 - n]
         return round((last - prior) / prior * 100, 2)
 
+    def sma(n):
+        if len(closes) < n:
+            return None
+        return round(sum(closes[-n:]) / n, 2)
+
+    def rsi(period=14):
+        """Wilder RSI over `period` days. Returns None if not enough data."""
+        if len(closes) < period + 1:
+            return None
+        deltas = [closes[i] - closes[i - 1] for i in range(len(closes) - period, len(closes))]
+        gains  = [d if d > 0 else 0.0 for d in deltas]
+        losses = [-d if d < 0 else 0.0 for d in deltas]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(100 - (100 / (1 + rs)), 1)
+
+    def atr_pct(period=14):
+        """ATR as % of last close — symbol's typical daily swing range."""
+        if len(closes) < period + 1:
+            return None
+        trs = []
+        for i in range(len(closes) - period, len(closes)):
+            tr = max(
+                highs[i]  - lows[i],
+                abs(highs[i]  - closes[i - 1]),
+                abs(lows[i]   - closes[i - 1]),
+            )
+            trs.append(tr)
+        return round((sum(trs) / period) / last * 100, 2)
+
+    def range_position(n=30):
+        """Where last close sits in the n-day high-low range (0 = low, 100 = high)."""
+        n = min(n, len(closes))
+        hi = max(highs[-n:])
+        lo = min(lows[-n:])
+        if hi == lo:
+            return 50.0
+        return round((last - lo) / (hi - lo) * 100, 1)
+
+    def vol_ratio():
+        """5-day avg volume vs 20-day avg volume. >1 = elevated recent activity."""
+        if len(volumes) < 20:
+            return None
+        avg5  = sum(volumes[-5:])  / 5
+        avg20 = sum(volumes[-20:]) / 20
+        if avg20 == 0:
+            return None
+        return round(avg5 / avg20, 2)
+
+    sma20 = sma(20)
+    sma50 = sma(50)
+
+    crossover = None
+    if sma20 is not None and sma50 is not None:
+        if sma20 > sma50:
+            crossover = "bullish"
+        elif sma20 < sma50:
+            crossover = "bearish"
+        else:
+            crossover = "neutral"
+
     return {
-        "last_close": round(last, 2),
-        "pct_change_1d": pct_change(1),
-        "pct_change_5d": pct_change(5),
-        "pct_change_10d": pct_change(10),
-        "pct_change_30d": pct_change(min(30, len(closes) - 1)),
+        # ---- price momentum ----
+        "last_close":      round(last, 2),
+        "pct_change_1d":   pct_change(1),
+        "pct_change_5d":   pct_change(5),
+        "pct_change_10d":  pct_change(10),
+        "pct_change_30d":  pct_change(min(30, len(closes) - 1)),
+        # ---- trend / moving averages ----
+        "sma_20":          sma20,
+        "sma_50":          sma50,
+        "pct_vs_sma20":    round((last - sma20) / sma20 * 100, 2) if sma20 else None,
+        "pct_vs_sma50":    round((last - sma50) / sma50 * 100, 2) if sma50 else None,
+        "sma_crossover":   crossover,   # "bullish" | "bearish" | "neutral" | None
+        # ---- momentum / mean-reversion ----
+        "rsi_14":          rsi(),
+        "range_pos_30d":   range_position(),  # 0 = 30d low, 100 = 30d high
+        # ---- volume & volatility ----
+        "vol_ratio_5d_20d": vol_ratio(),      # >1.2 = elevated volume
+        "atr_pct_14d":      atr_pct(),        # typical daily swing % of price
     }
 
 
@@ -1258,3 +1338,4 @@ def run_premarket_review(extra_context: str = ""):
                  error=safe_msg, news_context=news_context)
         _notify("Pre-market review failed", safe_msg[:200])
         raise
+
