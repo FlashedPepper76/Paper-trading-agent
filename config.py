@@ -124,12 +124,14 @@ AGENTS = {
     "hermes": {
         "label": "Hermes",
         "universe": HERMES_UNIVERSE,
-        # Uses Groq's inference API (api.groq.com) as primary AI provider.
-        # Two redundant Groq keys (GROQ_API_KEY / GROQ_API_KEY_2) provide
-        # failover in case one hits a rate limit. Gemini is NOT used by Hermes.
-        "ai_backend": "groq",
-        "groq_model": "llama-3.3-70b-versatile",
-        "gemini_model": "llama-3.3-70b-versatile",  # logged as model_used in runs table
+        # Uses Gemini on its own isolated Google AI Studio project so its
+        # quota is completely separate from Plutus/Helios. google_search
+        # grounding gives Hermes genuine live web search on every news
+        # research call — critical for the news-catalyst strategy.
+        # Groq (GROQ_API_KEY in the workflow) is the fallback if Gemini
+        # quota is exhausted.
+        "ai_backend": "gemini",
+        "gemini_model": "gemini-3.1-flash-lite",
         "instructions_file": "instructions_hermes.md",
         "max_open_positions": None,
         "max_new_buys_per_run": 2,

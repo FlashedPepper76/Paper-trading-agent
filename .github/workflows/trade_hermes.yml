@@ -32,8 +32,9 @@ jobs:
           RUN_TRIGGER: ${{ github.event.inputs.source || github.event_name }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HERMES }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HERMES }}
-          GROQ_API_KEY: ${{ secrets.GROK_API_KEY_1 }}
-          GROQ_API_KEY_2: ${{ secrets.GROK_API_KEY_2 }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_HERMES }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_HERMES_2 }}
+          GROQ_API_KEY: ${{ secrets.GROK_API_KEY_2 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
