@@ -1095,7 +1095,7 @@ def _log_positions(context: dict):
 # Entry point
 # --------------------------------------------------------------------------
 
-def run():
+def run(extra_context: str = ""):
     context = None
     news_context = None
     overall_reasoning = ""
@@ -1119,7 +1119,14 @@ def run():
                 "gate). Any orders submitted will sit unfilled until the next open."
             )
         news_context = _get_news_context()
-        ai_response = _call_model(context, news_context)
+
+        # Extra framing injected when the run was triggered manually with a prompt
+        manual_framing = (
+            f"\n\n## Manual context from Carter (injected for this run only)\n{extra_context}\n"
+            if extra_context else ""
+        )
+
+        ai_response = _call_model(context, news_context, extra_framing=manual_framing)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
@@ -1166,14 +1173,11 @@ immediately.
 """
 
 
-def run_premarket_review():
+def run_premarket_review(extra_context: str = ""):
     """
     Once per trading day, ~1 hour before open (see market_phase()): reviews
     the prior trading day's buy/sell activity plus current equity/cash/
-    positions, and gets one chance to queue a buy ahead of the open. Shares
-    every code path with the regular run() — same risk caps, same logging,
-    same notification rule — the only difference is the extra framing/recap
-    injected into the prompt and that market_open is always False here.
+    positions, and gets one chance to queue a buy ahead of the open.
     """
     context = None
     news_context = None
@@ -1184,7 +1188,16 @@ def run_premarket_review():
         print(f"Pre-market review. Yesterday recap: {recap}")
 
         news_context = _get_news_context()
-        ai_response = _call_model(context, news_context, extra_framing=_PREMARKET_FRAMING + "\n" + recap)
+
+        manual_framing = (
+            f"\n\n## Manual context from Carter (injected for this run only)\n{extra_context}\n"
+            if extra_context else ""
+        )
+
+        ai_response = _call_model(
+            context, news_context,
+            extra_framing=_PREMARKET_FRAMING + "\n" + recap + manual_framing,
+        )
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
