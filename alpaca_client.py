@@ -12,8 +12,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, OrderType
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -131,3 +131,24 @@ def submit_qty_order(symbol: str, qty: int, side: OrderSide):
 
 def close_position(symbol: str):
     return trading_client.close_position(symbol)
+
+
+def submit_limit_order(symbol: str, qty: int, side: OrderSide, limit_price: float):
+    """
+    Submits a GTC limit order. Used for both limit buys (buy-the-dip price
+    targets) and limit sells (take-profit / stop-gain targets).
+
+    GTC (Good Till Cancelled) keeps the order live until it fills or the agent
+    explicitly cancels it — appropriate for price targets that may take
+    multiple sessions to hit. The agent should track these open orders and
+    cancel/replace them if its thesis changes.
+    """
+    order = LimitOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=side,
+        type=OrderType.LIMIT,
+        time_in_force=TimeInForce.GTC,
+        limit_price=round(limit_price, 2),
+    )
+    return trading_client.submit_order(order)

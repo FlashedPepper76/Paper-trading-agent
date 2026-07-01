@@ -612,15 +612,22 @@ exactly this shape:
 {{
   "overall_reasoning": "1-3 sentences on your overall read of the portfolio/market this run",
   "decisions": [
-    {{"symbol": "AAPL", "action": "buy|sell|hold", "size_pct": 0.10, "confidence": "low|medium|high", "reasoning": "why"}}
+    {{"symbol": "AAPL", "action": "buy|sell|hold", "order_type": "market|limit", "limit_price": 0.00, "size_pct": 0.10, "confidence": "low|medium|high", "reasoning": "why"}}
   ]
 }}
 
-Only include symbols you want to take action on (buy or sell). You don't
-need to list every "hold" — omitting a symbol means hold/no action.
-size_pct is only used for "buy" (your conviction-sized fraction of equity,
-see the range above) and is ignored for "sell"/"hold" — a sell always
-closes the full existing position.
+Only include symbols you want to take action on (buy or sell). Omitting a
+symbol means hold/no action. Field notes:
+
+- **order_type**: "market" (default, fills immediately) or "limit" (GTC order,
+  fills when price reaches limit_price). Omit to default to "market".
+- **limit_price**: Required when order_type is "limit". For a limit buy, set
+  this below the current price (buy the dip). For a limit sell, set this above
+  the current price (take-profit target). The order stays live until it fills
+  or is cancelled by a future run.
+- **size_pct**: Fraction of equity per buy (see range above). Ignored for sells.
+- Sells always close the full position. A limit sell closes the full position
+  at the target price instead of immediately at market.
 """
 
     news_block = (
@@ -734,6 +741,10 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
             p = watchlist.get(sym, {}).get("last_close", 0.0)
         pending_committed += qty * p
 
+    # Hard cash floor: running available cash after pending orders.
+    # This is the strict ceiling we never let buys push through.
+    available_cash = max(0.0, cash - pending_committed)
+
     open_count = len(held)
     new_buys = 0
     new_buy_symbols_this_run = set()
@@ -742,8 +753,11 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
     for d in decisions:
         symbol = d.get("symbol", "").upper()
         action = d.get("action", "").lower()
+        order_type = d.get("order_type", "market").lower()
+        limit_price = d.get("limit_price")
         d["symbol"] = symbol
         d["action"] = action
+        d["order_type"] = order_type
 
         if symbol not in config.AGENT["universe"]:
             d["allowed"] = False
@@ -753,12 +767,26 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                 d["allowed"] = False
                 d["cap_note"] = "no position held to sell"
             else:
-                d["allowed"] = True
                 pos = context["held_positions"][symbol]
+                d["allowed"] = True
+                d["qty"] = int(pos["qty"])  # needed for limit sell execution
                 d["exit_price"] = pos["current_price"]
                 d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
+                if order_type == "limit":
+                    if not isinstance(limit_price, (int, float)) or limit_price <= 0:
+                        d["allowed"] = False
+                        d["cap_note"] = "limit sell requires a valid limit_price"
+                    elif limit_price <= pos["current_price"]:
+                        # Warn but still allow — agent might intend a stop-loss
+                        print(
+                            f"Note: limit sell for {symbol} at {limit_price} is at or "
+                            f"below current price {pos['current_price']} — will fill immediately or act as a floor."
+                        )
         elif action == "buy":
-            if symbol in held:
+            if available_cash <= 0:
+                d["allowed"] = False
+                d["cap_note"] = "no available cash remaining after pending orders"
+            elif symbol in held:
                 d["allowed"] = False
                 d["cap_note"] = "already held, ignoring duplicate buy"
             elif symbol in pending_buy_symbols:
@@ -774,10 +802,14 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                 d["allowed"] = False
                 d["cap_note"] = "max new buys per run reached"
             else:
-                price = watchlist.get(symbol, {}).get("last_close")
+                price = (limit_price if order_type == "limit" and isinstance(limit_price, (int, float)) and limit_price > 0
+                         else watchlist.get(symbol, {}).get("last_close"))
                 if not price:
                     d["allowed"] = False
                     d["cap_note"] = "no price data available for this symbol this run"
+                elif order_type == "limit" and (not isinstance(limit_price, (int, float)) or limit_price <= 0):
+                    d["allowed"] = False
+                    d["cap_note"] = "limit buy requires a valid limit_price"
                 else:
                     min_pct = config.AGENT["position_size_pct_min"]
                     max_pct = config.AGENT["position_size_pct_max"]
@@ -788,21 +820,34 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                         size_pct = (min_pct + max_pct) / 2
                     d["size_pct_used"] = round(size_pct, 4)
                     target_notional = equity * size_pct
-                    cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
-                    free_cash = max(0.0, cash - cash_floor - pending_committed)
-                    notional = min(target_notional, free_cash)
-                    qty = int(notional // (price * _FILL_PRICE_BUFFER))
+
+                    # For market buys apply a 2% fill-price buffer; limit buys
+                    # fill at exactly limit_price so no buffer needed.
+                    fill_buffer = 1.0 if order_type == "limit" else _FILL_PRICE_BUFFER
+                    notional = min(target_notional, available_cash)
+                    qty = int(notional // (price * fill_buffer))
+
                     if qty < 1:
                         d["allowed"] = False
                         d["cap_note"] = "insufficient cash for even 1 share at the sized notional"
                     else:
-                        d["qty"] = qty
-                        d["entry_price"] = price
-                        d["allowed"] = True
-                        open_count += 1
-                        new_buys += 1
-                        new_buy_symbols_this_run.add(symbol)
-                        cash -= qty * price * _FILL_PRICE_BUFFER
+                        committed = qty * price * fill_buffer
+                        # Hard stop: never let available_cash go negative
+                        if committed > available_cash:
+                            qty = int(available_cash // (price * fill_buffer))
+                        if qty < 1:
+                            d["allowed"] = False
+                            d["cap_note"] = "insufficient cash for even 1 share (hard cash floor enforced)"
+                        else:
+                            d["qty"] = qty
+                            d["entry_price"] = price
+                            d["allowed"] = True
+                            open_count += 1
+                            new_buys += 1
+                            new_buy_symbols_this_run.add(symbol)
+                            # Deduct from running available_cash so the next
+                            # buy in this same run sees the reduced balance.
+                            available_cash -= qty * price * fill_buffer
         elif action == "hold":
             d["allowed"] = False
             d["cap_note"] = "hold (no action taken)"
@@ -826,11 +871,20 @@ def _execute(decisions: list):
             d["order_status"] = f"skipped: {d.get('cap_note', 'not allowed')}"
             continue
         try:
+            order_type = d.get("order_type", "market").lower()
+            limit_price = d.get("limit_price")
             if d["action"] == "buy":
                 qty = d.get("qty", 1)
-                result = ac.submit_qty_order(d["symbol"], qty, OrderSide.BUY)
+                if order_type == "limit" and limit_price:
+                    result = ac.submit_limit_order(d["symbol"], qty, OrderSide.BUY, limit_price)
+                else:
+                    result = ac.submit_qty_order(d["symbol"], qty, OrderSide.BUY)
             else:  # sell
-                result = ac.close_position(d["symbol"])
+                qty = d.get("qty", 0)
+                if order_type == "limit" and limit_price and qty:
+                    result = ac.submit_limit_order(d["symbol"], qty, OrderSide.SELL, limit_price)
+                else:
+                    result = ac.close_position(d["symbol"])
             d["order_id"] = str(result.id) if hasattr(result, "id") else None
             d["order_status"] = str(getattr(result, "status", "submitted"))
         except Exception as e:
