@@ -38,15 +38,12 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
 
-# xAI Grok keys (api.x.ai) — used when agent ai_backend == "grok"
-GROK_API_KEY_1 = os.environ.get("GROK_API_KEY_1", "")
-GROK_API_KEY_2 = os.environ.get("GROK_API_KEY_2", "")
-XAI_GROK_KEYS = [k for k in (GROK_API_KEY_1, GROK_API_KEY_2) if k]
-
-# Groq (hardware inference company, separate from xAI Grok) — fallback
-# for Gemini-backed agents when all Gemini keys are exhausted.
+# Groq inference API keys (api.groq.com) — used as fallback for Gemini-backed
+# agents AND as the primary backend for Hermes (ai_backend == "groq").
+# Two keys provide failover when one hits a rate limit.
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_KEYS = [k for k in (GROQ_API_KEY,) if k]
+GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
+GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k]
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -186,83 +183,30 @@ def _build_context():
 
 
 # --------------------------------------------------------------------------
-# xAI Grok API (primary backend for Hermes)
-# --------------------------------------------------------------------------
-
-def _xai_grok_generate(system_prompt: str, user_message: str, *,
-                        json_mode: bool = True,
-                        web_search: bool = False,
-                        max_output_tokens: int = 2000) -> str:
-    """
-    Call xAI's Grok API (api.x.ai) with key failover between GROK_API_KEY_1
-    and GROK_API_KEY_2. The xAI API is OpenAI-compatible, so this uses the
-    standard chat completions endpoint.
-
-    web_search=True enables Grok's built-in live web search via
-    search_parameters — used for the news-research call so Hermes gets
-    fresh, real-time market context without a separate grounding step.
-    json_mode and web_search CAN be combined (unlike Gemini's restriction).
-    """
-    body = {
-        "model": config.AGENT.get("grok_model", "grok-3"),
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        "max_tokens": max_output_tokens,
-    }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-    if web_search:
-        body["search_parameters"] = {"mode": "auto"}
-
-    last_error = None
-    n_keys = len(XAI_GROK_KEYS)
-    for i, key in enumerate(XAI_GROK_KEYS):
-        try:
-            resp = requests.post(
-                "https://api.x.ai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-                timeout=90,
-            )
-            if resp.status_code == 429 and i < n_keys - 1:
-                print(f"Grok key #{i + 1} hit a rate/quota limit (429), trying next key...")
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            if i < n_keys - 1:
-                print(f"Grok key #{i + 1} failed ({e}), trying next key...")
-    raise last_error or RuntimeError("No xAI Grok API keys configured or all failed")
-
-
-# --------------------------------------------------------------------------
-# Groq (hardware inference, fallback for Gemini-backed agents only)
+# Groq inference API (primary for Hermes, fallback for Plutus/Helios)
 # --------------------------------------------------------------------------
 
 def _groq_generate(system_prompt: str, user_message: str, *,
                     json_mode=True, max_output_tokens=2000) -> str:
     """
-    Fallback path when every Gemini key is exhausted or Gemini itself is
-    returning 503s (overloaded). Groq's free tier has historically been more
-    available than Gemini's, and its OpenAI-compatible chat completions API
-    makes this a small, self-contained addition rather than a rewrite.
+    Call Groq's inference API (api.groq.com) with key failover between
+    GROQ_API_KEY and GROQ_API_KEY_2.
 
-    Not used for the news-research call (which depends on Gemini's
-    google_search grounding tool) — only for the JSON-mode decision call,
-    where the caller already builds context/news into the prompt text itself.
+    Serves two roles:
+    - Primary backend for Hermes (ai_backend == "groq"), using
+      llama-3.3-70b-versatile as the decision model.
+    - Fallback for Gemini-backed agents (Plutus/Helios) when all Gemini
+      keys are exhausted or Gemini is returning errors.
 
-    NOTE: This is Groq (groq.com, hardware inference), not xAI Grok — they
-    are unrelated companies. Hermes uses _xai_grok_generate() instead.
+    Groq's OpenAI-compatible API means no code changes between the two
+    roles — same function, same endpoint, same response shape.
     """
+    # Use the agent's configured Groq model when running as Hermes (primary
+    # backend). Fall back to llama-3.3-70b-versatile for the Gemini-fallback
+    # case where Plutus/Helios hit quota — that path doesn't set a groq_model.
+    model = config.AGENT.get("groq_model", "llama-3.3-70b-versatile")
     body = {
-        "model": "llama-3.3-70b-versatile",
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -418,43 +362,42 @@ def _research_news_gemini() -> str:
     return text.strip()
 
 
-def _research_news_grok() -> str:
+def _research_news_groq() -> str:
     """
-    News research via xAI Grok with built-in live web search (Hermes).
-    Grok's search_parameters mode="auto" lets it decide when to search and
-    then grounds the response in real-time web results — same outcome as
-    Gemini's google_search grounding, but in a single API call since Grok
-    doesn't have the json_mode + tools incompatibility that Gemini has.
+    News research via Groq (Hermes). Groq doesn't offer live web search,
+    so this is a pure text call asking the model to surface relevant market
+    context from its training data. The price-history data in the decision
+    prompt already provides the quantitative picture; this adds qualitative
+    sector/company context the model knows about.
     """
     symbols = ", ".join(config.AGENT["universe"])
     system_prompt = (
-        "You are a markets research assistant with live web search. Find what is "
-        "actually relevant to trading decisions right now. Cover, briefly:\n"
-        "- Major market-wide headlines from the last 24-48 hours (Fed/rate "
-        "decisions, inflation or jobs data, other major economic releases)\n"
-        "- Political developments with plausible market impact: legislation, "
-        "elections, regulatory or policy actions, geopolitical events, trade policy\n"
-        "- Specific earnings releases, FDA decisions, product launches, or "
-        "analyst upgrades/downgrades for these tickers: " + symbols + "\n"
-        "- Any breaking news that could trigger sharp intraday moves today\n\n"
-        "Stay strictly factual and neutral. Write 200-300 words as short plain-text "
-        "bullet-style lines (no markdown, no asterisks). Search for real current "
-        "information — do not rely on your training data for today's news."
+        "You are a markets research assistant. Based on your training knowledge, "
+        "summarize what is broadly relevant to trading decisions for a portfolio "
+        "focused on these tickers: " + symbols + ".\n\n"
+        "Cover briefly:\n"
+        "- Key macro themes currently affecting markets (rates, inflation, growth)\n"
+        "- Sector-level tailwinds or headwinds relevant to the tickers above\n"
+        "- Any well-known catalysts or risk events (earnings seasons, regulatory "
+        "cycles, product launches) for companies in this universe\n"
+        "- General sentiment context for high-beta growth vs. defensive names\n\n"
+        "Be concise — 150-200 words, plain-text bullet-style lines. "
+        "Note that your knowledge has a training cutoff, so flag if something "
+        "may have evolved since then."
     )
-    text = _xai_grok_generate(
+    text = _groq_generate(
         system_prompt,
-        "Search for and report current market-relevant news and catalysts right now.",
-        web_search=True,
+        "Provide a brief market context briefing for the tickers in my universe.",
         json_mode=False,
-        max_output_tokens=700,
+        max_output_tokens=500,
     )
     return text.strip()
 
 
 def _research_news() -> str:
     """Dispatch news research to the right backend based on agent config."""
-    if config.AGENT.get("ai_backend") == "grok":
-        return _research_news_grok()
+    if config.AGENT.get("ai_backend") == "groq":
+        return _research_news_groq()
     return _research_news_gemini()
 
 
@@ -649,8 +592,8 @@ def _call_model(context: dict, news_context: str | None, extra_framing: str = ""
                 "breaks, make sure any quotes inside text are properly escaped, "
                 "and keep 'reasoning' to one short sentence per symbol."
             )
-        if backend == "grok":
-            text = _xai_grok_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
+        if backend == "groq":
+            text = _groq_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
         else:
             text = _gemini_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
 
@@ -860,8 +803,8 @@ def _notify(title: str, body: str):
 def _active_model_name() -> str:
     """Returns a human-readable model name for logging."""
     backend = config.AGENT.get("ai_backend", "gemini")
-    if backend == "grok":
-        return config.AGENT.get("grok_model", "grok-3")
+    if backend == "groq":
+        return config.AGENT.get("groq_model", "llama-3.3-70b-versatile")
     return config.AGENT.get("gemini_model", "unknown")
 
 

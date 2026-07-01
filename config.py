@@ -124,13 +124,12 @@ AGENTS = {
     "hermes": {
         "label": "Hermes",
         "universe": HERMES_UNIVERSE,
-        # Uses xAI's Grok API (api.x.ai) as primary AI provider.
-        # Grok has built-in live web search which makes it especially
-        # well-suited for the news-catalyst strategy Hermes employs.
-        # Gemini is NOT used by Hermes — grok_model is the active model.
-        "ai_backend": "grok",
-        "grok_model": "grok-3",
-        "gemini_model": "grok-3",  # logged as model_used in runs table; set to grok-3
+        # Uses Groq's inference API (api.groq.com) as primary AI provider.
+        # Two redundant Groq keys (GROQ_API_KEY / GROQ_API_KEY_2) provide
+        # failover in case one hits a rate limit. Gemini is NOT used by Hermes.
+        "ai_backend": "groq",
+        "groq_model": "llama-3.3-70b-versatile",
+        "gemini_model": "llama-3.3-70b-versatile",  # logged as model_used in runs table
         "instructions_file": "instructions_hermes.md",
         "max_open_positions": None,
         "max_new_buys_per_run": 2,
@@ -197,7 +196,7 @@ def _load_dynamic_agent(agent_id: str) -> dict:
         "universe": row["universe"],
         "ai_backend": row.get("ai_backend") or "gemini",
         "gemini_model": row.get("gemini_model") or "gemini-3.1-flash-lite",
-        "grok_model": row.get("grok_model") or "grok-3",
+        "groq_model": row.get("groq_model") or "llama-3.3-70b-versatile",
         # Dynamic agents have no local .md fallback — _load_instructions()
         # requires the Supabase agent_instructions row to exist for these.
         "instructions_file": None,
