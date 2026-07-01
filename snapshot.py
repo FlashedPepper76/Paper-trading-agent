@@ -22,11 +22,15 @@ import requests
 import alpaca_client as ac
 import config
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+
+# 5-minute VTI timeframe — matches the granularity the user wants on the chart.
+# 6.5 h × 12 bars/h = 78 bars per trading day, giving real shape to the line.
+_VTI_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)
 
 
 def _headers(extra_prefer: str = "") -> dict:
@@ -41,90 +45,85 @@ def _headers(extra_prefer: str = "") -> dict:
 
 
 def _snapshot_vti() -> None:
-    """Keep the VTI benchmark current in Supabase.
+    """Keep VTI 5-minute bars current in Supabase (Plutus only).
 
-    Two behaviours in one call (Plutus only):
+    Runs every 5 minutes (when now.minute % 5 == 0) to match the requested
+    VTI granularity. Each call fetches ALL bars for the last 5 trading days
+    and upserts them — idempotent against the (symbol, price_time) PK, so
+    already-stored bars are just no-ops and new bars are inserted.
 
-    1. Daily history back-fill: upserts the last 90 days of daily closes so
-       the compare chart always has a long enough baseline. Stored at 20:00 UTC
-       (= 4 PM ET close) per day. Run only every ~60 minutes to avoid hammering
-       Alpaca — we check whether Supabase already has today's daily close first.
+    Uses a 15-minute lag (bar_end = now - 15 min) to stay within Alpaca's
+    free-tier SIP latency window on paper accounts.
 
-    2. Intraday tick: fetches the most-recent 1-minute bar (using a 15-minute
-       lag to stay within Alpaca's free-tier SIP latency window) and upserts it
-       under its own price_time. At one call per minute during market hours this
-       gives ~390 intraday VTI points per trading day, matching the density of
-       Plutus's own run history and giving the benchmark line real definition
-       on the compare chart.
+    Also refreshes the daily history backfill once per hour (minute == 0)
+    for the last 90 days, so the baseline is always available even if the
+    intraday table is fresh.
     """
     if config.AGENT_ID != "plutus":
         return
 
     now = datetime.now(timezone.utc)
 
-    # ── Intraday tick (every run) ─────────────────────────────────────────────
-    try:
-        # Stay 15 min behind to satisfy Alpaca free-tier SIP delay
-        bar_end   = now - timedelta(minutes=15)
-        bar_start = bar_end - timedelta(minutes=5)
-        req = StockBarsRequest(
-            symbol_or_symbols=["VTI"],
-            timeframe=TimeFrame.Minute,
-            start=bar_start,
-            end=bar_end,
-            feed=DataFeed.SIP,
-        )
-        bars = ac.data_client.get_stock_bars(req).data
-        vti_bars = bars.get("VTI", [])
-        if vti_bars:
-            bar = vti_bars[-1]
-            requests.post(
-                f"{SUPABASE_URL}/rest/v1/benchmark_prices",
-                headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-                params={"on_conflict": "symbol,price_time"},
-                json=[{
-                    "symbol": "VTI",
-                    "price_date": bar.timestamp.strftime("%Y-%m-%d"),
-                    "price_time": bar.timestamp.isoformat(),
-                    "close": round(float(bar.close), 4),
-                }],
-                timeout=10,
-            ).raise_for_status()
-    except Exception as exc:
-        print(f"VTI intraday tick failed (non-fatal): {exc}")
+    # ── 5-minute intraday bars (every 5 minutes) ──────────────────────────────
+    if now.minute % 5 == 0:
+        try:
+            bar_end   = now - timedelta(minutes=15)   # free-tier SIP lag
+            bar_start = now - timedelta(days=5)        # covers last ~3 trading days
+            req = StockBarsRequest(
+                symbol_or_symbols=["VTI"],
+                timeframe=_VTI_TIMEFRAME,
+                start=bar_start,
+                end=bar_end,
+                feed=DataFeed.SIP,
+            )
+            bars = ac.data_client.get_stock_bars(req).data
+            vti_bars = bars.get("VTI", [])
+            if vti_bars:
+                rows = [
+                    {
+                        "symbol": "VTI",
+                        "price_date": bar.timestamp.strftime("%Y-%m-%d"),
+                        "price_time": bar.timestamp.isoformat(),
+                        "close": round(float(bar.close), 4),
+                    }
+                    for bar in vti_bars
+                ]
+                requests.post(
+                    f"{SUPABASE_URL}/rest/v1/benchmark_prices",
+                    headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    params={"on_conflict": "symbol,price_time"},
+                    json=rows,
+                    timeout=15,
+                ).raise_for_status()
+                print(f"VTI 5-min bars upserted: {len(rows)}")
+        except Exception as exc:
+            print(f"VTI 5-min snapshot failed (non-fatal): {exc}")
 
-    # ── Daily history back-fill (once per hour, rough guard) ─────────────────
-    # Only run when the minute hand is near 0 (i.e., roughly once an hour) to
-    # avoid 90-day Alpaca fetches every minute.
-    if now.minute > 2:
-        return
-
-    try:
-        bars_by_symbol = ac.get_recent_bars(["VTI"], lookback_days=90)
-        vti_daily = bars_by_symbol.get("VTI", [])
-        if not vti_daily:
-            return
-        rows = [
-            {
-                "symbol": "VTI",
-                "price_date": bar.timestamp.strftime("%Y-%m-%d"),
-                # Daily close stored at 20:00 UTC (4 PM ET)
-                "price_time": bar.timestamp.strftime("%Y-%m-%d") + "T20:00:00+00:00",
-                "close": round(float(bar.close), 4),
-                "updated_at": now.isoformat(),
-            }
-            for bar in vti_daily
-        ]
-        requests.post(
-            f"{SUPABASE_URL}/rest/v1/benchmark_prices",
-            headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-            params={"on_conflict": "symbol,price_time"},
-            json=rows,
-            timeout=15,
-        ).raise_for_status()
-        print(f"VTI daily history refreshed: {len(rows)} bars")
-    except Exception as exc:
-        print(f"VTI daily history failed (non-fatal): {exc}")
+    # ── Daily history back-fill (once per hour) ───────────────────────────────
+    if now.minute == 0:
+        try:
+            daily_bars = ac.get_recent_bars(["VTI"], lookback_days=90).get("VTI", [])
+            if daily_bars:
+                rows = [
+                    {
+                        "symbol": "VTI",
+                        "price_date": bar.timestamp.strftime("%Y-%m-%d"),
+                        "price_time": bar.timestamp.strftime("%Y-%m-%d") + "T20:00:00+00:00",
+                        "close": round(float(bar.close), 4),
+                        "updated_at": now.isoformat(),
+                    }
+                    for bar in daily_bars
+                ]
+                requests.post(
+                    f"{SUPABASE_URL}/rest/v1/benchmark_prices",
+                    headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    params={"on_conflict": "symbol,price_time"},
+                    json=rows,
+                    timeout=15,
+                ).raise_for_status()
+                print(f"VTI daily history refreshed: {len(rows)} bars")
+        except Exception as exc:
+            print(f"VTI daily history failed (non-fatal): {exc}")
 
 
 def main():
