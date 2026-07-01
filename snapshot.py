@@ -37,6 +37,52 @@ def _headers(extra_prefer: str = "") -> dict:
     return h
 
 
+def _snapshot_vti() -> None:
+    """Fetch recent VTI daily closes via Alpaca and upsert to Supabase.
+
+    Called from snapshot.py so the compare-page benchmark line reads from
+    Supabase instead of calling Yahoo Finance / stooq directly (both are
+    blocked from Vercel's egress IPs). Alpaca's SIP feed has daily bars
+    available for free (data is always > 15 min old by definition for daily
+    bars, so the free tier latency restriction never applies).
+
+    Only runs when AGENT_ID == "plutus" so three concurrent snapshots
+    (one per agent) don't triple-fetch the same data.
+    """
+    if config.AGENT_ID != "plutus":
+        return
+
+    try:
+        bars_by_symbol = ac.get_recent_bars(["VTI"], lookback_days=90)
+        vti_bars = bars_by_symbol.get("VTI", [])
+        if not vti_bars:
+            print("VTI snapshot: no bars returned")
+            return
+
+        rows = [
+            {
+                "symbol": "VTI",
+                "price_date": bar.timestamp.strftime("%Y-%m-%d"),
+                "close": round(float(bar.close), 4),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for bar in vti_bars
+        ]
+
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/benchmark_prices",
+            headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            params={"on_conflict": "symbol,price_date"},
+            json=rows,
+            timeout=15,
+        ).raise_for_status()
+
+        print(f"VTI benchmark updated: {len(rows)} daily bars")
+    except Exception as exc:
+        # Non-fatal: benchmark data is cosmetic; don't crash the snapshot
+        print(f"VTI snapshot failed (non-fatal): {exc}")
+
+
 def main():
     account = ac.get_account()
     positions = ac.get_open_positions()
@@ -100,6 +146,9 @@ def main():
         f"Snapshot logged for {config.AGENT_ID}: equity={state_payload['equity']} "
         f"cash={state_payload['cash']} positions={state_payload['num_open_positions']}"
     )
+
+    # Update VTI benchmark data (Plutus only, idempotent upsert)
+    _snapshot_vti()
 
 
 if __name__ == "__main__":
