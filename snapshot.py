@@ -15,12 +15,15 @@ keeps equity current through extended-hours price moves so the dashboard
 always matches what Alpaca shows.
 """
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 import alpaca_client as ac
 import config
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -38,49 +41,90 @@ def _headers(extra_prefer: str = "") -> dict:
 
 
 def _snapshot_vti() -> None:
-    """Fetch recent VTI daily closes via Alpaca and upsert to Supabase.
+    """Keep the VTI benchmark current in Supabase.
 
-    Called from snapshot.py so the compare-page benchmark line reads from
-    Supabase instead of calling Yahoo Finance / stooq directly (both are
-    blocked from Vercel's egress IPs). Alpaca's SIP feed has daily bars
-    available for free (data is always > 15 min old by definition for daily
-    bars, so the free tier latency restriction never applies).
+    Two behaviours in one call (Plutus only):
 
-    Only runs when AGENT_ID == "plutus" so three concurrent snapshots
-    (one per agent) don't triple-fetch the same data.
+    1. Daily history back-fill: upserts the last 90 days of daily closes so
+       the compare chart always has a long enough baseline. Stored at 20:00 UTC
+       (= 4 PM ET close) per day. Run only every ~60 minutes to avoid hammering
+       Alpaca — we check whether Supabase already has today's daily close first.
+
+    2. Intraday tick: fetches the most-recent 1-minute bar (using a 15-minute
+       lag to stay within Alpaca's free-tier SIP latency window) and upserts it
+       under its own price_time. At one call per minute during market hours this
+       gives ~390 intraday VTI points per trading day, matching the density of
+       Plutus's own run history and giving the benchmark line real definition
+       on the compare chart.
     """
     if config.AGENT_ID != "plutus":
         return
 
+    now = datetime.now(timezone.utc)
+
+    # ── Intraday tick (every run) ─────────────────────────────────────────────
+    try:
+        # Stay 15 min behind to satisfy Alpaca free-tier SIP delay
+        bar_end   = now - timedelta(minutes=15)
+        bar_start = bar_end - timedelta(minutes=5)
+        req = StockBarsRequest(
+            symbol_or_symbols=["VTI"],
+            timeframe=TimeFrame.Minute,
+            start=bar_start,
+            end=bar_end,
+            feed=DataFeed.SIP,
+        )
+        bars = ac.data_client.get_stock_bars(req).data
+        vti_bars = bars.get("VTI", [])
+        if vti_bars:
+            bar = vti_bars[-1]
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/benchmark_prices",
+                headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                params={"on_conflict": "symbol,price_time"},
+                json=[{
+                    "symbol": "VTI",
+                    "price_date": bar.timestamp.strftime("%Y-%m-%d"),
+                    "price_time": bar.timestamp.isoformat(),
+                    "close": round(float(bar.close), 4),
+                }],
+                timeout=10,
+            ).raise_for_status()
+    except Exception as exc:
+        print(f"VTI intraday tick failed (non-fatal): {exc}")
+
+    # ── Daily history back-fill (once per hour, rough guard) ─────────────────
+    # Only run when the minute hand is near 0 (i.e., roughly once an hour) to
+    # avoid 90-day Alpaca fetches every minute.
+    if now.minute > 2:
+        return
+
     try:
         bars_by_symbol = ac.get_recent_bars(["VTI"], lookback_days=90)
-        vti_bars = bars_by_symbol.get("VTI", [])
-        if not vti_bars:
-            print("VTI snapshot: no bars returned")
+        vti_daily = bars_by_symbol.get("VTI", [])
+        if not vti_daily:
             return
-
         rows = [
             {
                 "symbol": "VTI",
                 "price_date": bar.timestamp.strftime("%Y-%m-%d"),
+                # Daily close stored at 20:00 UTC (4 PM ET)
+                "price_time": bar.timestamp.strftime("%Y-%m-%d") + "T20:00:00+00:00",
                 "close": round(float(bar.close), 4),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": now.isoformat(),
             }
-            for bar in vti_bars
+            for bar in vti_daily
         ]
-
         requests.post(
             f"{SUPABASE_URL}/rest/v1/benchmark_prices",
             headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
-            params={"on_conflict": "symbol,price_date"},
+            params={"on_conflict": "symbol,price_time"},
             json=rows,
             timeout=15,
         ).raise_for_status()
-
-        print(f"VTI benchmark updated: {len(rows)} daily bars")
+        print(f"VTI daily history refreshed: {len(rows)} bars")
     except Exception as exc:
-        # Non-fatal: benchmark data is cosmetic; don't crash the snapshot
-        print(f"VTI snapshot failed (non-fatal): {exc}")
+        print(f"VTI daily history failed (non-fatal): {exc}")
 
 
 def main():
@@ -98,7 +142,6 @@ def main():
         for symbol, pos in positions.items()
     }
 
-    # Upsert the single equity/cash/position-count row for this agent.
     state_payload = {
         "agent_id": config.AGENT_ID,
         "equity": round(float(account.equity), 2),
@@ -113,13 +156,6 @@ def main():
         timeout=15,
     ).raise_for_status()
 
-    # Refresh the per-symbol positions snapshot the dashboard's Positions
-    # page reads. Upsert-then-prune (not delete-then-insert) — this runs
-    # roughly every minute and ai_agent.py writes to the same table on its
-    # own 15-minute cadence, so a wholesale delete from either process could
-    # land mid-write from the other. Upserting by the (agent_id, symbol)
-    # unique constraint and only deleting symbols no longer held avoids that
-    # window entirely.
     if held:
         rows = [
             {"agent_id": config.AGENT_ID, "symbol": symbol, **pos}
@@ -147,7 +183,6 @@ def main():
         f"cash={state_payload['cash']} positions={state_payload['num_open_positions']}"
     )
 
-    # Update VTI benchmark data (Plutus only, idempotent upsert)
     _snapshot_vti()
 
 
