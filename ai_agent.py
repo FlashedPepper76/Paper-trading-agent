@@ -301,6 +301,11 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                     quota_exhausted = "RESOURCE_EXHAUSTED" in resp.text and "free_tier_requests" in resp.text
                     if quota_exhausted:
                         print(f"Gemini key #{i + 1}: daily free-tier quota exhausted — not retrying, won't clear within seconds.")
+                        _notify(
+                            "API quota exhausted",
+                            f"{GEMINI_KEY_NAMES[i]} hit the daily free-tier limit and won't recover until midnight PT. "
+                            f"{'Trying next key.' if not is_last_key else 'No more Gemini keys — falling back to Groq.'}"
+                        )
                     elif attempt < rate_limit_attempts - 1:
                         wait = 8 * (attempt + 1)
                         print(
@@ -319,6 +324,7 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                     break
                 if tools is None and GROQ_KEYS:
                     print(f"All Gemini keys failed ({e}), falling back to Groq...")
+                    _notify("Falling back to Groq", f"All Gemini keys failed ({_safe_str(e)[:120]}). This run will use Groq (llama-3.3-70b).")
                     return _groq_generate(
                         system_prompt, user_message,
                         json_mode=json_mode, max_output_tokens=max_output_tokens,
@@ -326,6 +332,7 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                 raise
     if tools is None and GROQ_KEYS:
         print(f"All Gemini keys failed ({last_error}), falling back to Groq...")
+        _notify("Falling back to Groq", f"All Gemini keys failed ({_safe_str(last_error)[:120]}). This run will use Groq (llama-3.3-70b).")
         return _groq_generate(
             system_prompt, user_message,
             json_mode=json_mode, max_output_tokens=max_output_tokens,
@@ -1175,6 +1182,7 @@ def run(extra_context: str = ""):
         safe_msg = _safe_str(e)
         print(f"Agent run failed: {safe_msg}")
         _log_run(market_open, context, overall_reasoning=overall_reasoning, error=safe_msg, news_context=news_context)
+        _notify("Run failed", safe_msg[:200])
         raise
 
 
@@ -1248,4 +1256,5 @@ def run_premarket_review(extra_context: str = ""):
         print(f"Pre-market review failed: {safe_msg}")
         _log_run(market_open=False, context=context, overall_reasoning=overall_reasoning,
                  error=safe_msg, news_context=news_context)
+        _notify("Pre-market review failed", safe_msg[:200])
         raise
