@@ -3,9 +3,9 @@ import os
 # --------------------------------------------------------------------------
 # Per-agent definitions
 # --------------------------------------------------------------------------
-# Two independent agents share this one codebase but always run as separate
-# GitHub Actions jobs (each setting AGENT_ID + its own Alpaca/Gemini secrets
-# for that job only — see .github/workflows/). They never share a brokerage
+# Three independent agents share this one codebase but always run as separate
+# GitHub Actions jobs (each setting AGENT_ID + its own Alpaca/AI secrets for
+# that job only — see .github/workflows/). They never share a brokerage
 # account, a risk budget, or a Supabase cache row. AGENT_ID picks which
 # entry in AGENTS below is active for a given run.
 
@@ -35,11 +35,32 @@ HELIOS_UNIVERSE = [
     "JNJ", "PG", "KO", "PEP", "MCD", "WMT", "JPM", "V", "MA", "HD", "UNH", "COST",
 ]
 
-# Both paper accounts started at this balance — the new equity-floor goal
-# ("try to stay above this") is anchored to it, surfaced to the model as
-# information rather than enforced as a hard code-level cap, same reasoning
-# as removing the buy cooldown: a number to weigh, not a rule to route
-# around.
+# Hermes: news/catalyst-driven event trader. Focuses on liquid large-cap stocks
+# across sectors that react meaningfully to earnings, regulatory decisions,
+# macro data releases, and other discrete news catalysts. Takes short-to-medium
+# term positions (1-5 days typically) when fresh events create mis-pricing.
+# Uses xAI Grok with built-in web search — news context is the primary input,
+# price history is secondary. Starts at $10k (displayed as $100k equivalent).
+HERMES_UNIVERSE = [
+    # Mega-cap tech (frequent earnings/product/regulatory news)
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # Semiconductors (supply chain, export controls, earnings-driven)
+    "AMD", "INTC", "AVGO", "QCOM", "MU",
+    # Financials (rate decisions, regulatory, earnings)
+    "JPM", "GS", "BAC", "MS", "C", "V", "MA",
+    # Healthcare / pharma (FDA catalysts, trial results, drug pricing)
+    "JNJ", "PFE", "MRNA", "ABBV", "LLY", "BMY",
+    # Energy (oil price, geopolitical, supply/demand news)
+    "XOM", "CVX", "OXY", "SLB",
+    # Retail / consumer (CPI, consumer confidence, earnings)
+    "WMT", "COST", "TGT", "HD", "NKE", "MCD",
+    # High-beta growth (heavily news-driven price swings)
+    "COIN", "PLTR", "SQ", "SHOP", "RBLX",
+    # Sector ETFs (macro or sector-wide news plays)
+    "SPY", "QQQ", "XLK", "XLF", "XLE", "XLV",
+]
+
+# Both Plutus and Helios paper accounts started at this balance.
 STARTING_EQUITY = 100_000.0
 
 AGENTS = {
@@ -58,6 +79,7 @@ AGENTS = {
         # on the same project, confirmed via the same Rate Limit page, which
         # comfortably covers even 15-minute polling across market hours.
         "gemini_model": "gemini-3.1-flash-lite",
+        "ai_backend": "gemini",
         "instructions_file": "instructions.md",
         # No hard cap on open positions — removed per Carter's request
         # (2026-06-30). Position sizing (position_size_pct_min/_max) and
@@ -81,11 +103,13 @@ AGENTS = {
         # itself rather than blocked by code.
         "min_cash_buffer_pct": 0.0,
         "news_refresh_minutes": 30,
+        "starting_equity": 100_000.0,
     },
     "helios": {
         "label": "Helios",
         "universe": HELIOS_UNIVERSE,
         "gemini_model": "gemini-3.1-flash-lite",
+        "ai_backend": "gemini",
         "instructions_file": "instructions_helios.md",
         "max_open_positions": None,
         "max_new_buys_per_run": 2,
@@ -95,6 +119,37 @@ AGENTS = {
         "position_size_pct_max": 0.10,
         "min_cash_buffer_pct": 0.0,
         "news_refresh_minutes": 180,
+        "starting_equity": 100_000.0,
+    },
+    "hermes": {
+        "label": "Hermes",
+        "universe": HERMES_UNIVERSE,
+        # Uses xAI's Grok API (api.x.ai) as primary AI provider.
+        # Grok has built-in live web search which makes it especially
+        # well-suited for the news-catalyst strategy Hermes employs.
+        # Gemini is NOT used by Hermes — grok_model is the active model.
+        "ai_backend": "grok",
+        "grok_model": "grok-3",
+        "gemini_model": "grok-3",  # logged as model_used in runs table; set to grok-3
+        "instructions_file": "instructions_hermes.md",
+        "max_open_positions": None,
+        "max_new_buys_per_run": 2,
+        # Moderate sizing — bigger than Helios, smaller than Plutus's max.
+        # Hermes bets on specific catalysts, so medium conviction = medium size.
+        "position_size_pct_min": 0.05,
+        "position_size_pct_max": 0.15,
+        "min_cash_buffer_pct": 0.0,
+        # Refresh news on every run — Hermes runs every 15 min and the whole
+        # point is to react to fresh news, so stale context is counterproductive.
+        "news_refresh_minutes": 15,
+        # Hermes paper account started at $10k (not $100k like Plutus/Helios).
+        # The dashboard displays this as ×10 for apples-to-apples comparison.
+        "starting_equity": 10_000.0,
+        # Multiplier applied by the dashboard when showing absolute dollar
+        # amounts (equity, cash, P/L) — makes $10k look like $100k so the
+        # three agents are visually on the same scale. Return percentages
+        # are naturally unaffected.
+        "display_scale": 10,
     },
 }
 
@@ -140,7 +195,9 @@ def _load_dynamic_agent(agent_id: str) -> dict:
     return {
         "label": row["label"],
         "universe": row["universe"],
+        "ai_backend": row.get("ai_backend") or "gemini",
         "gemini_model": row.get("gemini_model") or "gemini-3.1-flash-lite",
+        "grok_model": row.get("grok_model") or "grok-3",
         # Dynamic agents have no local .md fallback — _load_instructions()
         # requires the Supabase agent_instructions row to exist for these.
         "instructions_file": None,
@@ -150,6 +207,8 @@ def _load_dynamic_agent(agent_id: str) -> dict:
         "position_size_pct_max": float(row.get("position_size_pct_max", 0.15)),
         "min_cash_buffer_pct": float(row.get("min_cash_buffer_pct", 0.0)),
         "news_refresh_minutes": int(row.get("news_refresh_minutes", 60)),
+        "starting_equity": float(row.get("starting_equity", 100_000.0)),
+        "display_scale": int(row.get("display_scale", 1)),
     }
 
 

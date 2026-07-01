@@ -1,0 +1,40 @@
+name: Hermes Trading Bot (news-catalyst / event-driven)
+
+on:
+  # Triggered every 15 minutes during market hours by a Supabase pg_cron job
+  # ('hermes-trigger') — see trade.yml for why this no longer uses GitHub's
+  # native `schedule:` trigger. Hermes runs at a 15-minute cadence (vs.
+  # Plutus's per-minute cadence) since its news-catalyst strategy doesn't
+  # benefit from ultra-high-frequency polling; a 15-minute window is enough
+  # to catch and act on breaking news without burning xAI Grok API quota.
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Internal: set to 'schedule' by the Supabase cron caller. Leave blank for a manual run."
+        required: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run trading bot (Hermes)
+        env:
+          AGENT_ID: hermes
+          RUN_TRIGGER: ${{ github.event.inputs.source || github.event_name }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY_HERMES }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY_HERMES }}
+          GROK_API_KEY_1: ${{ secrets.GROK_API_KEY_1 }}
+          GROK_API_KEY_2: ${{ secrets.GROK_API_KEY_2 }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
+        run: python main.py

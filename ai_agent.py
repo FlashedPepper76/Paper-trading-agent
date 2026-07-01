@@ -4,8 +4,9 @@ AI-driven trading agent.
 Each run:
   1. Gathers account state, open positions, and recent price stats for the
      universe in config.py.
-  2. Sends that context + instructions.md to Gemini and asks for buy/sell/
-     hold decisions with reasoning, as JSON.
+  2. Sends that context + instructions to the configured AI backend (Gemini
+     for Plutus/Helios, xAI Grok for Hermes) and asks for buy/sell/hold
+     decisions with reasoning, as JSON.
   3. Validates every decision against the hard risk caps in config.py —
      the AI's judgment never overrides these; they're enforced in code.
   4. Executes approved orders via alpaca_client.
@@ -29,11 +30,24 @@ import config
 import alpaca_client as ac
 from schedule import market_phase
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# --------------------------------------------------------------------------
+# API keys
+# --------------------------------------------------------------------------
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
+
+# xAI Grok keys (api.x.ai) — used when agent ai_backend == "grok"
+GROK_API_KEY_1 = os.environ.get("GROK_API_KEY_1", "")
+GROK_API_KEY_2 = os.environ.get("GROK_API_KEY_2", "")
+XAI_GROK_KEYS = [k for k in (GROK_API_KEY_1, GROK_API_KEY_2) if k]
+
+# Groq (hardware inference company, separate from xAI Grok) — fallback
+# for Gemini-backed agents when all Gemini keys are exhausted.
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_KEYS = [k for k in (GROQ_API_KEY,) if k]
+
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "")
@@ -154,13 +168,14 @@ def _build_context():
     cash = round(float(account.cash), 2)
     equity = round(float(account.equity), 2)
     minutes_since_buy = _minutes_since_last_buy()
+    starting_equity = config.AGENT.get("starting_equity", config.STARTING_EQUITY)
 
     return {
         "account": {
             "equity": equity,
             "cash": cash,
             "cash_pct_of_equity": round(cash / equity * 100, 1) if equity else None,
-            "equity_vs_starting_balance": round(equity - config.STARTING_EQUITY, 2),
+            "equity_vs_starting_balance": round(equity - starting_equity, 2),
         },
         "held_positions": held,
         "watchlist": watchlist,
@@ -171,44 +186,65 @@ def _build_context():
 
 
 # --------------------------------------------------------------------------
-# Gemini call
+# xAI Grok API (primary backend for Hermes)
 # --------------------------------------------------------------------------
 
-def _load_instructions() -> str:
+def _xai_grok_generate(system_prompt: str, user_message: str, *,
+                        json_mode: bool = True,
+                        web_search: bool = False,
+                        max_output_tokens: int = 2000) -> str:
     """
-    Instructions live in Supabase (agent_instructions table, keyed by
-    agent_id) so they can be edited from the dashboard per-agent. Falls
-    back to the active agent's local instructions file if the Supabase read
-    fails for any reason, so a bad network blip never takes the run down —
-    except for dynamically-added agents (instructions_file is None for
-    those), which have no local file to fall back to and so require the
-    Supabase read to succeed.
+    Call xAI's Grok API (api.x.ai) with key failover between GROK_API_KEY_1
+    and GROK_API_KEY_2. The xAI API is OpenAI-compatible, so this uses the
+    standard chat completions endpoint.
+
+    web_search=True enables Grok's built-in live web search via
+    search_parameters — used for the news-research call so Hermes gets
+    fresh, real-time market context without a separate grounding step.
+    json_mode and web_search CAN be combined (unlike Gemini's restriction).
     """
-    try:
-        resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/agent_instructions",
-            headers=_supabase_headers(),
-            params={"agent_id": f"eq.{config.AGENT_ID}", "select": "content"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        rows = resp.json()
-        if rows and rows[0].get("content"):
-            return rows[0]["content"]
-    except Exception as e:
-        print(f"Could not load instructions from Supabase ({e}), falling back to local file.")
+    body = {
+        "model": config.AGENT.get("grok_model", "grok-3"),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": max_output_tokens,
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    if web_search:
+        body["search_parameters"] = {"mode": "auto"}
 
-    instructions_file = config.AGENT.get("instructions_file")
-    if not instructions_file:
-        raise RuntimeError(
-            f"No instructions available for agent '{config.AGENT_ID}': the Supabase "
-            "agent_instructions read failed or returned nothing, and this agent has "
-            "no local instructions file to fall back to (dynamically-added agents "
-            "depend on the Supabase row existing)."
-        )
-    with open(instructions_file, "r") as f:
-        return f.read()
+    last_error = None
+    n_keys = len(XAI_GROK_KEYS)
+    for i, key in enumerate(XAI_GROK_KEYS):
+        try:
+            resp = requests.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=90,
+            )
+            if resp.status_code == 429 and i < n_keys - 1:
+                print(f"Grok key #{i + 1} hit a rate/quota limit (429), trying next key...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if i < n_keys - 1:
+                print(f"Grok key #{i + 1} failed ({e}), trying next key...")
+    raise last_error or RuntimeError("No xAI Grok API keys configured or all failed")
 
+
+# --------------------------------------------------------------------------
+# Groq (hardware inference, fallback for Gemini-backed agents only)
+# --------------------------------------------------------------------------
 
 def _groq_generate(system_prompt: str, user_message: str, *,
                     json_mode=True, max_output_tokens=2000) -> str:
@@ -221,6 +257,9 @@ def _groq_generate(system_prompt: str, user_message: str, *,
     Not used for the news-research call (which depends on Gemini's
     google_search grounding tool) — only for the JSON-mode decision call,
     where the caller already builds context/news into the prompt text itself.
+
+    NOTE: This is Groq (groq.com, hardware inference), not xAI Grok — they
+    are unrelated companies. Hermes uses _xai_grok_generate() instead.
     """
     body = {
         "model": "llama-3.3-70b-versatile",
@@ -259,6 +298,10 @@ def _groq_generate(system_prompt: str, user_message: str, *,
     raise last_error or RuntimeError("No Groq API keys configured")
 
 
+# --------------------------------------------------------------------------
+# Gemini API (primary for Plutus/Helios)
+# --------------------------------------------------------------------------
+
 def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
                       json_mode=True, max_output_tokens=2000) -> str:
     """
@@ -289,13 +332,6 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
     n_keys = len(GEMINI_KEYS)
     for i, key in enumerate(GEMINI_KEYS):
         is_last_key = i == n_keys - 1
-        # A 429 on a non-last key just moves on to the next key (1 try each).
-        # On the last key, a couple of short backoff retries used to run
-        # unconditionally — but in practice every retry against a genuine
-        # daily quota exhaustion ("RESOURCE_EXHAUSTED" /
-        # free_tier_requests) failed every single time and just burned
-        # GitHub Actions minutes for nothing. Only bother retrying when the
-        # 429 doesn't look like that — i.e. an actually transient hit.
         rate_limit_attempts = 3 if is_last_key else 1
         for attempt in range(rate_limit_attempts):
             try:
@@ -348,13 +384,11 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
 
 
 # --------------------------------------------------------------------------
-# News / politics / society research (Google Search grounding, cached)
+# News / market research (cached per agent)
 # --------------------------------------------------------------------------
 
-def _research_news() -> str:
-    """One grounded Gemini call that researches what's currently moving (or
-    could move) markets: macro headlines, politics/policy, and broader
-    societal trends, plus anything specific to the trading universe."""
+def _research_news_gemini() -> str:
+    """News research via Gemini with google_search grounding (Plutus/Helios)."""
     symbols = ", ".join(config.AGENT["universe"])
     system_prompt = (
         "You are a markets research assistant. Use Google Search to find what is "
@@ -382,6 +416,46 @@ def _research_news() -> str:
         max_output_tokens=700,
     )
     return text.strip()
+
+
+def _research_news_grok() -> str:
+    """
+    News research via xAI Grok with built-in live web search (Hermes).
+    Grok's search_parameters mode="auto" lets it decide when to search and
+    then grounds the response in real-time web results — same outcome as
+    Gemini's google_search grounding, but in a single API call since Grok
+    doesn't have the json_mode + tools incompatibility that Gemini has.
+    """
+    symbols = ", ".join(config.AGENT["universe"])
+    system_prompt = (
+        "You are a markets research assistant with live web search. Find what is "
+        "actually relevant to trading decisions right now. Cover, briefly:\n"
+        "- Major market-wide headlines from the last 24-48 hours (Fed/rate "
+        "decisions, inflation or jobs data, other major economic releases)\n"
+        "- Political developments with plausible market impact: legislation, "
+        "elections, regulatory or policy actions, geopolitical events, trade policy\n"
+        "- Specific earnings releases, FDA decisions, product launches, or "
+        "analyst upgrades/downgrades for these tickers: " + symbols + "\n"
+        "- Any breaking news that could trigger sharp intraday moves today\n\n"
+        "Stay strictly factual and neutral. Write 200-300 words as short plain-text "
+        "bullet-style lines (no markdown, no asterisks). Search for real current "
+        "information — do not rely on your training data for today's news."
+    )
+    text = _xai_grok_generate(
+        system_prompt,
+        "Search for and report current market-relevant news and catalysts right now.",
+        web_search=True,
+        json_mode=False,
+        max_output_tokens=700,
+    )
+    return text.strip()
+
+
+def _research_news() -> str:
+    """Dispatch news research to the right backend based on agent config."""
+    if config.AGENT.get("ai_backend") == "grok":
+        return _research_news_grok()
+    return _research_news_gemini()
 
 
 def _get_news_context() -> str | None:
@@ -436,10 +510,49 @@ def _get_news_context() -> str | None:
 
 
 # --------------------------------------------------------------------------
-# Decision call
+# Decision call (dispatches to Grok or Gemini based on agent config)
 # --------------------------------------------------------------------------
 
-def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "") -> dict:
+def _load_instructions() -> str:
+    """
+    Instructions live in Supabase (agent_instructions table, keyed by
+    agent_id) so they can be edited from the dashboard per-agent. Falls
+    back to the active agent's local instructions file if the Supabase read
+    fails for any reason, so a bad network blip never takes the run down —
+    except for dynamically-added agents (instructions_file is None for
+    those), which have no local file to fall back to and so require the
+    Supabase read to succeed.
+    """
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/agent_instructions",
+            headers=_supabase_headers(),
+            params={"agent_id": f"eq.{config.AGENT_ID}", "select": "content"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if rows and rows[0].get("content"):
+            return rows[0]["content"]
+    except Exception as e:
+        print(f"Could not load instructions from Supabase ({e}), falling back to local file.")
+
+    instructions_file = config.AGENT.get("instructions_file")
+    if not instructions_file:
+        raise RuntimeError(
+            f"No instructions available for agent '{config.AGENT_ID}': the Supabase "
+            "agent_instructions read failed or returned nothing, and this agent has "
+            "no local instructions file to fall back to (dynamically-added agents "
+            "depend on the Supabase row existing)."
+        )
+    with open(instructions_file, "r") as f:
+        return f.read()
+
+
+def _build_decision_prompt(context: dict, news_context: str | None,
+                            extra_framing: str = "") -> tuple[str, str]:
+    """Builds (system_prompt, user_message) for the decision call."""
+    starting_equity = config.AGENT.get("starting_equity", config.STARTING_EQUITY)
     minutes_since_buy = context.get("minutes_since_last_buy")
     if minutes_since_buy is None:
         pacing_line = "No prior buy on record — this would be the first."
@@ -450,9 +563,9 @@ def _call_gemini(context: dict, news_context: str | None, extra_framing: str = "
 
     equity_delta = context["account"]["equity_vs_starting_balance"]
     if equity_delta >= 0:
-        equity_line = f"${equity_delta:,.2f} ABOVE the ${config.STARTING_EQUITY:,.0f} starting balance."
+        equity_line = f"${equity_delta:,.2f} ABOVE the ${starting_equity:,.0f} starting balance."
     else:
-        equity_line = f"${abs(equity_delta):,.2f} BELOW the ${config.STARTING_EQUITY:,.0f} starting balance."
+        equity_line = f"${abs(equity_delta):,.2f} BELOW the ${starting_equity:,.0f} starting balance."
 
     system_prompt = _load_instructions() + extra_framing + f"""
 
@@ -500,11 +613,10 @@ closes the full existing position.
 """
 
     news_block = (
-        "\n\n## Current news / politics / society context (researched via web "
-        f"search, refreshed at most every {config.AGENT['news_refresh_minutes']} min — "
-        "may be incomplete or slightly stale)\n" + news_context
+        "\n\n## Current news / market catalyst context (refreshed at most every "
+        f"{config.AGENT['news_refresh_minutes']} min via live web search)\n" + news_context
         if news_context else
-        "\n\n## Current news / politics / society context\n"
+        "\n\n## Current news / market catalyst context\n"
         "(unavailable this run — reason about price action alone)\n"
     )
 
@@ -513,18 +625,23 @@ closes the full existing position.
         + json.dumps(context, indent=2)
         + news_block
     )
+    return system_prompt, user_message
+
+
+def _call_model(context: dict, news_context: str | None, extra_framing: str = "") -> dict:
+    """
+    Routes the decision call to either xAI Grok (Hermes) or Gemini
+    (Plutus/Helios) based on the active agent's ai_backend config key.
+    Both paths build the same prompt and return the same dict shape so the
+    rest of run() doesn't need to know which backend was used.
+    """
+    system_prompt, user_message = _build_decision_prompt(context, news_context, extra_framing)
+    backend = config.AGENT.get("ai_backend", "gemini")
 
     last_exc = None
-    cleaned = ""
     for attempt in range(2):
         prompt = user_message
         if attempt > 0:
-            # Most failures seen in practice are an unterminated/invalid string
-            # well before any output-length limit, not truncation — i.e. Gemini
-            # occasionally emits a stray literal quote or newline inside a text
-            # field despite JSON mode. Ask explicitly for single-line, escaped
-            # strings and a shorter reasoning field, then give it one more try
-            # rather than failing (and skipping this run's decisions) outright.
             prompt += (
                 "\n\n## Your previous response was invalid JSON\n"
                 f"Parse error: {last_exc}\n"
@@ -532,13 +649,17 @@ closes the full existing position.
                 "breaks, make sure any quotes inside text are properly escaped, "
                 "and keep 'reasoning' to one short sentence per symbol."
             )
-        text = _gemini_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
+        if backend == "grok":
+            text = _xai_grok_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
+        else:
+            text = _gemini_generate(system_prompt, prompt, json_mode=True, max_output_tokens=3500)
+
         cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
             last_exc = e
-            print(f"Gemini JSON parse failed on attempt {attempt + 1}/2 ({e}).")
+            print(f"AI JSON parse failed on attempt {attempt + 1}/2 ({e}).")
     raise last_exc
 
 
@@ -550,9 +671,9 @@ def _minutes_since_last_buy() -> float | None:
     """
     Minutes since this agent's most recent *executed* buy, or None if it has
     never bought anything. Surfaced to the model as information (see
-    _call_gemini's "portfolio status" section) so it can weigh its own
-    pacing — this used to be a hard code-level cooldown that blocked any buy
-    outright regardless of the AI's reasoning, but that meant the model
+    _build_decision_prompt's "portfolio status" section) so it can weigh its
+    own pacing — this used to be a hard code-level cooldown that blocked any
+    buy outright regardless of the AI's reasoning, but that meant the model
     couldn't actually reason about it at all (it was never even told the
     cooldown existed). Removed in favor of giving it the real numbers and
     trusting its judgment, same as the rest of the portfolio context.
@@ -594,12 +715,6 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
     cash = context["account"]["cash"]
     pending_buy_symbols = set(pending_buy_info.keys())
 
-    # Subtract cash already committed to pending (unfilled) buy orders.
-    # account.cash doesn't update until orders fill, so a pre-market run can
-    # queue orders and a subsequent run will see the same cash balance —
-    # committing the same dollars to different symbols and causing negative
-    # cash once everything fills. Deducting the estimated pending cost here
-    # prevents that double-spend.
     pending_committed = 0.0
     for sym, qty in pending_buy_info.items():
         if sym in context["held_positions"]:
@@ -657,26 +772,14 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                     max_pct = config.AGENT["position_size_pct_max"]
                     requested_pct = d.get("size_pct")
                     if isinstance(requested_pct, (int, float)) and requested_pct > 0:
-                        # Clamp, don't reject — the model gets credit for
-                        # picking a size, code just keeps it in-band rather
-                        # than silently substituting its own number.
                         size_pct = max(min_pct, min(max_pct, requested_pct))
                     else:
-                        # No usable size from the model this run — fall
-                        # back to the midpoint of its own range rather than
-                        # defaulting to the top (most risk) or bottom
-                        # (most timid) on its behalf.
                         size_pct = (min_pct + max_pct) / 2
                     d["size_pct_used"] = round(size_pct, 4)
                     target_notional = equity * size_pct
                     cash_floor = equity * config.AGENT["min_cash_buffer_pct"]
-                    # Deduct pending-order commitments from available cash so
-                    # runs that follow a pre-market queue don't double-spend.
                     free_cash = max(0.0, cash - cash_floor - pending_committed)
                     notional = min(target_notional, free_cash)
-                    # Apply a price buffer so the actual fill (at current market
-                    # price, which can be above last_close) fits within the
-                    # budgeted notional rather than pushing cash negative.
                     qty = int(notional // (price * _FILL_PRICE_BUFFER))
                     if qty < 1:
                         d["allowed"] = False
@@ -688,8 +791,6 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                         open_count += 1
                         new_buys += 1
                         new_buy_symbols_this_run.add(symbol)
-                        # Track estimated cash spend (with buffer) so subsequent
-                        # buys in this same run don't also over-commit.
                         cash -= qty * price * _FILL_PRICE_BUFFER
         elif action == "hold":
             d["allowed"] = False
@@ -756,6 +857,14 @@ def _notify(title: str, body: str):
         print(f"Notify failed (non-fatal): {e}")
 
 
+def _active_model_name() -> str:
+    """Returns a human-readable model name for logging."""
+    backend = config.AGENT.get("ai_backend", "gemini")
+    if backend == "grok":
+        return config.AGENT.get("grok_model", "grok-3")
+    return config.AGENT.get("gemini_model", "unknown")
+
+
 def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
              error: str | None, news_context: str | None = None) -> int | None:
     payload = {
@@ -766,7 +875,7 @@ def _log_run(market_open: bool, context: dict | None, overall_reasoning: str,
         "account_cash": context["account"]["cash"] if context else None,
         "num_open_positions": len(context["held_positions"]) if context else None,
         "overall_reasoning": overall_reasoning,
-        "model_used": config.AGENT["gemini_model"],
+        "model_used": _active_model_name(),
         "error": error,
         "news_context": news_context,
     }
@@ -840,10 +949,9 @@ def _refresh_account_state() -> dict:
 def log_idle(market_open: bool):
     """
     Lightweight check-in for cron ticks that don't run the full agent (market
-    closed). Deliberately skips Gemini entirely so it doesn't burn API quota
+    closed). Deliberately skips the AI entirely so it doesn't burn API quota
     every minute outside trading hours — just records a current account
-    snapshot and a plain "checked in, no action" note, so the dashboard shows
-    continuous liveness instead of long silent gaps between real runs.
+    snapshot and a plain "checked in, no action" note.
     """
     try:
         state = _refresh_account_state()
@@ -879,20 +987,9 @@ def log_idle(market_open: bool):
 
 def _log_positions(context: dict):
     """
-    Replaces this agent's stored 'current positions' snapshot with what we
-    just observed from Alpaca (qty, avg entry price, current price, P/L%,
-    market value per symbol) — this is what powers the dashboard's
-    Positions view and the bought/current price shown per decision in the
-    log, without the dashboard ever needing to talk to Alpaca directly.
-
-    Upsert-then-prune rather than delete-then-insert: a wholesale delete
-    followed by a separate insert leaves a real window where this agent has
-    zero rows, and snapshot.py writes to this same table roughly every
-    minute — a delete from one process landing between another process's
-    delete and insert could leave stale or duplicate rows, or a moment with
-    none at all. Upserting by the (agent_id, symbol) unique constraint and
-    only deleting symbols no longer held avoids that window entirely.
-    Best-effort either way — never blocks a trading run.
+    Replaces this agent's stored 'current positions' snapshot.
+    Upsert-then-prune rather than delete-then-insert to avoid race windows
+    with snapshot.py which writes to the same table every minute.
     """
     try:
         held = context["held_positions"] if context else {}
@@ -917,8 +1014,6 @@ def _log_positions(context: dict):
                 timeout=30,
             ).raise_for_status()
 
-        # Prune any symbol no longer held (closed positions shouldn't
-        # linger), scoped to this agent and excluding what we just upserted.
         held_list = ",".join(held.keys()) if held else ""
         symbol_filter = f"not.in.({held_list})" if held_list else "not.is.null"
         requests.delete(
@@ -959,18 +1054,13 @@ def run():
                 "gate). Any orders submitted will sit unfilled until the next open."
             )
         news_context = _get_news_context()
-        ai_response = _call_gemini(context, news_context)
+        ai_response = _call_model(context, news_context)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
         decisions = _enforce_caps(decisions, context, ac.get_pending_buy_info())
         _execute(decisions)
 
-        # Re-fetch fresh from Alpaca now that this run's own orders have been
-        # submitted, so the logged equity/positions reflect what actually
-        # happened this run rather than the pre-trade snapshot used above to
-        # build the decision prompt. Falls back to the pre-trade snapshot if
-        # the refetch itself fails, so logging never blocks on this.
         try:
             post_context = _refresh_account_state()
         except Exception as e:
@@ -1018,8 +1108,7 @@ def run_premarket_review():
     positions, and gets one chance to queue a buy ahead of the open. Shares
     every code path with the regular run() — same risk caps, same logging,
     same notification rule — the only difference is the extra framing/recap
-    injected into the prompt and that market_open is always False here
-    (the market genuinely isn't open yet when this runs).
+    injected into the prompt and that market_open is always False here.
     """
     context = None
     news_context = None
@@ -1030,7 +1119,7 @@ def run_premarket_review():
         print(f"Pre-market review. Yesterday recap: {recap}")
 
         news_context = _get_news_context()
-        ai_response = _call_gemini(context, news_context, extra_framing=_PREMARKET_FRAMING + "\n" + recap)
+        ai_response = _call_model(context, news_context, extra_framing=_PREMARKET_FRAMING + "\n" + recap)
         overall_reasoning = ai_response.get("overall_reasoning", "")
         decisions = ai_response.get("decisions", [])
 
