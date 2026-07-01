@@ -37,6 +37,7 @@ from schedule import market_phase
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
+GEMINI_KEY_NAMES = ["GEMINI_API_KEY", "GEMINI_API_KEY_2"][: len(GEMINI_KEYS)]
 
 # Groq inference API keys (api.groq.com) — used as fallback for Gemini-backed
 # agents AND as the primary backend for Hermes (ai_backend == "groq").
@@ -44,6 +45,7 @@ GEMINI_KEYS = [k for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k]
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
 GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k]
+GROQ_KEY_NAMES = ["GROQ_API_KEY", "GROQ_API_KEY_2"][: len(GROQ_KEYS)]
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -219,7 +221,9 @@ def _groq_generate(system_prompt: str, user_message: str, *,
     last_error = None
     n_keys = len(GROQ_KEYS)
     for i, key in enumerate(GROQ_KEYS):
+        key_name = GROQ_KEY_NAMES[i]
         try:
+            print(f"Calling {key_name}")
             resp = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
@@ -275,10 +279,12 @@ def _gemini_generate(system_prompt: str, user_message: str, *, tools=None,
     last_error = None
     n_keys = len(GEMINI_KEYS)
     for i, key in enumerate(GEMINI_KEYS):
+        key_name = GEMINI_KEY_NAMES[i]
         is_last_key = i == n_keys - 1
         rate_limit_attempts = 3 if is_last_key else 1
         for attempt in range(rate_limit_attempts):
             try:
+                print(f"Calling {key_name} (attempt {attempt + 1})" if attempt > 0 else f"Calling {key_name}")
                 resp = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{config.AGENT['gemini_model']}:generateContent",
                     params={"key": key},
