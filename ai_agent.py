@@ -4,9 +4,10 @@ AI-driven trading agent.
 Each run:
   1. Gathers account state, open positions, and recent price stats for the
      universe in config.py.
-  2. Sends that context + instructions to the configured AI backend (Gemini
-     for Plutus/Helios, xAI Grok for Hermes) and asks for buy/sell/hold
-     decisions with reasoning, as JSON.
+  2. Sends that context + instructions to the configured AI backend — Gemini
+     is primary for all three agents (Plutus, Helios, Hermes), with
+     Groq-hosted Llama-3.3-70b as fallback if Gemini's keys are exhausted —
+     and asks for buy/sell/hold decisions with reasoning, as JSON.
   3. Validates every decision against the hard risk caps in config.py —
      the AI's judgment never overrides these; they're enforced in code.
   4. Executes approved orders via alpaca_client.
@@ -111,6 +112,72 @@ def _yesterday_recap() -> str:
     except Exception as e:
         print(f"Could not build yesterday's recap ({e}); proceeding without it.")
         return "(Could not load yesterday's activity — proceed using current portfolio state only.)"
+
+
+# Slightly under the intended 15-minute grid (see instructions.md's "Daily
+# schedule" section and schedule.py's market_phase docstring) so ordinary
+# cron jitter never causes a false skip.
+_MIN_REAL_RUN_INTERVAL_MINUTES = 13.0
+
+
+def _minutes_since_last_real_run() -> float | None:
+    """
+    Minutes since this agent's last *real* run — a decision run (run() or
+    run_premarket_review()), not a log_idle() check-in. None if there's no
+    prior run or the check fails.
+    """
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_runs",
+            headers=_supabase_headers(),
+            params={
+                "agent_id": f"eq.{config.AGENT_ID}",
+                "model_used": "not.is.null",
+                "select": "run_at",
+                "order": "run_at.desc",
+                "limit": "1",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return None
+        last_at = datetime.fromisoformat(rows[0]["run_at"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last_at).total_seconds() / 60
+    except Exception as e:
+        print(f"Could not check last real-run cadence ({e}); proceeding without throttling.")
+        return None
+
+
+def should_throttle_cadence() -> bool:
+    """
+    True if this is an automatic (cron-triggered) tick and a real decision
+    run for this agent already happened more recently than
+    _MIN_REAL_RUN_INTERVAL_MINUTES ago.
+
+    Every agent's instructions and pacing judgment ("X minutes since your
+    last buy", "most checks should end in hold") are calibrated around
+    being asked to decide roughly every 15 minutes — not every time the
+    external Supabase pg_cron trigger happens to fire. main.py's own
+    market_phase() gate only restricts *when* runs are allowed (market
+    hours, the pre-market window), not *how often* within that window; if
+    the external trigger ever fires faster than intended (it has, per
+    several since-corrected comments in this repo's own history), nothing
+    previously stopped a full AI decision call — with real orders on the
+    line — from firing far more often than the "mostly hold" philosophy in
+    instructions.md assumes. That's the exact shape of the overtrading
+    incidents already recorded in this agent's own lessons-learned notes.
+    This makes the intended cadence a real code-level property instead of
+    something that only holds if an external scheduler is configured
+    exactly right. Manual/forced runs (RUN_TRIGGER != 'schedule') always
+    bypass this — a human or a manual_agent_run.py test asked for a run
+    right now on purpose.
+    """
+    if RUN_TRIGGER != "schedule":
+        return False
+    minutes = _minutes_since_last_real_run()
+    return minutes is not None and minutes < _MIN_REAL_RUN_INTERVAL_MINUTES
 
 
 # --------------------------------------------------------------------------
@@ -660,7 +727,7 @@ def _get_news_context() -> str | None:
 
 
 # --------------------------------------------------------------------------
-# Decision call (dispatches to Grok or Gemini based on agent config)
+# Decision call (dispatches to Groq or Gemini based on agent config)
 # --------------------------------------------------------------------------
 
 def _load_instructions() -> str:
@@ -787,10 +854,12 @@ symbol means hold/no action. Field notes:
 
 def _call_model(context: dict, news_context: str | None, extra_framing: str = "") -> dict:
     """
-    Routes the decision call to either xAI Grok (Hermes) or Gemini
-    (Plutus/Helios) based on the active agent's ai_backend config key.
-    Both paths build the same prompt and return the same dict shape so the
-    rest of run() doesn't need to know which backend was used.
+    Routes the decision call to either Groq (llama-3.3-70b, if
+    ai_backend == "groq") or Gemini based on the active agent's ai_backend
+    config key. All three agents (Plutus, Helios, Hermes) currently run on
+    Gemini as primary. Both paths build the same prompt and return the same
+    dict shape so the rest of run() doesn't need to know which backend was
+    used.
     """
     system_prompt, user_message = _build_decision_prompt(context, news_context, extra_framing)
     backend = config.AGENT.get("ai_backend", "gemini")
@@ -907,20 +976,36 @@ def _enforce_caps(decisions: list, context: dict, pending_buy_info: dict) -> lis
                 d["cap_note"] = "no position held to sell"
             else:
                 pos = context["held_positions"][symbol]
-                d["allowed"] = True
-                d["qty"] = int(pos["qty"])  # needed for limit sell execution
-                d["exit_price"] = pos["current_price"]
-                d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
-                if order_type == "limit":
-                    if not isinstance(limit_price, (int, float)) or limit_price <= 0:
-                        d["allowed"] = False
-                        d["cap_note"] = "limit sell requires a valid limit_price"
-                    elif limit_price <= pos["current_price"]:
-                        # Warn but still allow — agent might intend a stop-loss
-                        print(
-                            f"Note: limit sell for {symbol} at {limit_price} is at or "
-                            f"below current price {pos['current_price']} — will fill immediately or act as a floor."
-                        )
+                held_qty = pos["qty"]
+                # Alpaca limit orders require whole-share qty. Positions bought
+                # notional (Hermes' use_notional path) can hold fractional
+                # shares — truncating that to int() for a limit sell would
+                # silently leave a fractional "dust" remainder open forever,
+                # breaking the output-format promise that "a limit sell closes
+                # the full position." Reject instead so the position stays
+                # intact and a market sell (which does close it in full,
+                # fractional or not) is the only way to exit it.
+                if order_type == "limit" and held_qty != int(held_qty):
+                    d["allowed"] = False
+                    d["cap_note"] = (
+                        f"limit sell not allowed on a fractional position ({held_qty} shares) — "
+                        "Alpaca limit orders require whole shares; use a market sell to close it"
+                    )
+                else:
+                    d["allowed"] = True
+                    d["qty"] = int(held_qty)  # needed for limit sell execution
+                    d["exit_price"] = pos["current_price"]
+                    d["realized_pnl_pct"] = pos["unrealized_pl_pct"]
+                    if order_type == "limit":
+                        if not isinstance(limit_price, (int, float)) or limit_price <= 0:
+                            d["allowed"] = False
+                            d["cap_note"] = "limit sell requires a valid limit_price"
+                        elif limit_price <= pos["current_price"]:
+                            # Warn but still allow — agent might intend a stop-loss
+                            print(
+                                f"Note: limit sell for {symbol} at {limit_price} is at or "
+                                f"below current price {pos['current_price']} — will fill immediately or act as a floor."
+                            )
         elif action == "buy":
             if available_cash <= 0:
                 d["allowed"] = False
@@ -1302,6 +1387,22 @@ def _log_positions(context: dict):
 # Entry point
 # --------------------------------------------------------------------------
 
+def _cancel_stale_orders():
+    """Best-effort cleanup of orders that never resolved (see
+    alpaca_client.cancel_stale_open_orders) — must never block a run."""
+    try:
+        cancelled = ac.cancel_stale_open_orders()
+        if cancelled:
+            print(f"Cancelled {len(cancelled)} stale unfilled order(s): {', '.join(cancelled)}")
+            _notify(
+                "Cleared stale orders",
+                f"{len(cancelled)} order(s) never filled and were cancelled so they stop tying up cash: "
+                + ", ".join(cancelled),
+            )
+    except Exception as e:
+        print(f"Could not check for stale orders ({e}) — non-fatal.")
+
+
 def run(extra_context: str = ""):
     context = None
     news_context = None
@@ -1309,6 +1410,7 @@ def run(extra_context: str = ""):
     market_open = True
     try:
         market_open = ac.is_market_open()
+        _cancel_stale_orders()
         context = _build_context()
         missing = [
             s for s in config.AGENT["universe"]
@@ -1391,6 +1493,7 @@ def run_premarket_review(extra_context: str = ""):
     news_context = None
     overall_reasoning = ""
     try:
+        _cancel_stale_orders()
         context = _build_context()
         recap = _yesterday_recap()
         print(f"Pre-market review. Yesterday recap: {recap}")

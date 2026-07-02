@@ -41,6 +41,9 @@ def main():
             print(f"Looks like 8:30am ET, but the next real session is {minutes_to_open:.0f} min away "
                   "(holiday/weekend) — skipping the pre-market review.")
             return
+        if ai_agent.should_throttle_cadence():
+            print("Pre-market review already ran within this window — skipping duplicate cron tick.")
+            return
         print("Running the once-daily pre-market review.")
         ai_agent.run_premarket_review()
         return
@@ -49,6 +52,10 @@ def main():
     if not ac.is_market_open():
         print("Market is closed (holiday/weekend, or just outside actual session hours). Logging a check-in.")
         ai_agent.log_idle(market_open=False)
+        return
+
+    if ai_agent.should_throttle_cadence():
+        print("A decision run already happened within the intended ~15-minute cadence — skipping duplicate cron tick.")
         return
 
     print("Market is open — running AI agent.")

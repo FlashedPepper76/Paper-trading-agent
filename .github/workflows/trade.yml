@@ -1,13 +1,16 @@
 name: Paper Trading Bot
 
 on:
-  # Triggered every minute during market hours by a Supabase pg_cron job
-  # (see the trigger_github_workflow() function + 'plutus-trigger' cron job
-  # in the life-dashboard Supabase project), since GitHub's own native
-  # `schedule:` trigger never once fired for this repo despite being
-  # correctly configured — a known, occasionally-occurring GitHub-side
-  # flakiness. Deliberately not using `schedule:` here anymore so there's
-  # no chance of double-firing if GitHub's scheduler ever starts working.
+  # Triggered by a Supabase pg_cron job (see the trigger_github_workflow()
+  # function + 'plutus-trigger' cron job in the life-dashboard Supabase
+  # project), since GitHub's own native `schedule:` trigger never once
+  # fired for this repo despite being correctly configured — a known,
+  # occasionally-occurring GitHub-side flakiness. Deliberately not using
+  # `schedule:` here anymore so there's no chance of double-firing if
+  # GitHub's scheduler ever starts working. Intended decision cadence is
+  # every 15 minutes during market hours (see instructions.md); regardless
+  # of how often this trigger actually fires, main.py self-throttles real
+  # decision runs to ~15 minutes apart via ai_agent.should_throttle_cadence().
   workflow_dispatch:
     inputs:
       source:

@@ -7,22 +7,30 @@ touched by design.
 
 ## How it works
 
-1. **`.github/workflows/trade.yml`** fires every minute on weekdays (with a
-   buffer window around US market hours) and can also be triggered
-   manually from the Actions tab.
+1. **`.github/workflows/trade.yml`** (and the Helios/Hermes equivalents) are
+   triggered by a Supabase pg_cron job and can also be triggered manually
+   from the Actions tab. The intended decision cadence is every 15 minutes
+   during market hours; `main.py` self-throttles to that cadence in code
+   (`ai_agent.should_throttle_cadence()`) regardless of how often the
+   external trigger actually fires, so a faster or misconfigured trigger
+   can't cause more-frequent-than-intended trading or burn through API quota.
 2. **`main.py`** checks Alpaca's market clock and exits immediately if the
    market is closed.
 3. **`ai_agent.py`** gathers account state, open positions, and recent
-   price stats for the universe in `config.py`. It also researches current
-   news, politics, and societal trends via a Gemini call with Google Search
+   price stats for the universe in `config.py`, and cancels any open orders
+   that never resolved (see `alpaca_client.cancel_stale_open_orders`) so
+   they stop tying up cash indefinitely. It also researches current news,
+   politics, and societal trends via a Gemini call with Google Search
    grounding, cached in Supabase and refreshed at most every
    `NEWS_REFRESH_MINUTES` (so a fast cron doesn't re-search every run). Both
    feed into a separate Gemini call (alongside `instructions.md`) that
    returns buy/sell/hold decisions with reasoning.
 4. **Hard risk caps in `config.py` are enforced in code** — the AI's
-   judgment never overrides them. Max positions, max new buys per run,
-   position sizing, and a cash buffer are all checked before any order is
-   placed.
+   judgment never overrides them. Max new buys per run and position sizing
+   are checked before any order is placed (see the table below for current
+   per-agent values — some caps, like max open positions and the cash
+   floor, have deliberately been removed in favor of the AI weighing that
+   context itself; see `instructions.md`'s "Lessons learned" section).
 5. **Every run is logged to Supabase** (`trading_agent_runs` and
    `trading_agent_decisions` tables in the life-dashboard project) — that's
    your window into what the agent decided and why.
@@ -81,9 +89,14 @@ testing. Results get written to `last_order_result.json` in the repo.
 
 ## Risk guardrails (config.py)
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `MAX_OPEN_POSITIONS` | 12 | Never hold more than this many positions at once |
-| `MAX_NEW_BUYS_PER_RUN` | 5 | Cap on new positions opened in a single run |
-| `POSITION_SIZE_PCT` | 15% | Position size as a fraction of account equity |
-| `MIN_CASH_BUFFER_PCT` | 5% | Cash that's always kept in reserve |
+Per-agent, set in the `AGENTS` dict in `config.py`. `max_open_positions` and
+the cash floor are intentionally `None`/`0` for every agent right now — see
+`instructions.md`'s "Lessons learned" section for why (position sizing and
+the AI's own equity-floor judgment are the real guardrails there instead).
+
+| Setting | Plutus | Helios | Hermes | Meaning |
+|---|---|---|---|---|
+| `max_open_positions` | none | none | none | Cap on simultaneous open positions |
+| `max_new_buys_per_run` | 3 | 2 | 2 | Cap on new positions opened in a single run |
+| `position_size_pct_min`–`max` | 4%–18% | 3%–10% | 5%–15% | Position size range as a fraction of equity; the AI picks within it, code clamps if it doesn't |
+| `min_cash_buffer_pct` | 0% | 0% | 0% | Cash always kept in reserve |

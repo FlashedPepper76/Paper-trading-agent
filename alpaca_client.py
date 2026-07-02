@@ -123,6 +123,41 @@ def get_pending_buy_symbols() -> set:
     return set(get_pending_buy_info().keys())
 
 
+def cancel_stale_open_orders(max_age_hours: float = 20.0) -> list[str]:
+    """
+    Cancels open (unfilled) orders older than max_age_hours and returns the
+    symbols cancelled. Every order this codebase submits is either DAY
+    (should resolve — fill or expire — by the end of its own session) or
+    GTC limit (meant to be tracked/replaced by the agent, not abandoned).
+    In practice, orders have been observed sitting at ACCEPTED for days
+    without filling or auto-expiring (see the manual Check Positions /
+    Cancel Orders workflows this was previously handled through by hand).
+
+    Left alone, a stale order permanently counts against
+    get_pending_buy_info()'s cash-commitment estimate in _enforce_caps,
+    silently shrinking the cash every future run thinks it has available —
+    real capital taken out of play with no order actually working and no
+    code path that ever puts it back. Called at the top of every run so
+    this self-heals automatically instead of requiring the manual
+    check_positions.py / cancel_orders.py scripts.
+    """
+    open_orders = trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
+    now = datetime.now(timezone.utc)
+    cancelled = []
+    for o in open_orders:
+        if not o.submitted_at:
+            continue
+        age_hours = (now - o.submitted_at).total_seconds() / 3600
+        if age_hours < max_age_hours:
+            continue
+        try:
+            trading_client.cancel_order_by_id(o.id)
+            cancelled.append(f"{o.symbol} ({str(o.side).rsplit('.', 1)[-1]}, {age_hours:.0f}h old)")
+        except Exception as e:
+            print(f"Could not cancel stale order {o.id} ({o.symbol}): {e}")
+    return cancelled
+
+
 def get_recent_bars(symbols: list[str], lookback_days: int = 60) -> dict:
     """
     Daily bars for a list of equity/ETF symbols (no crypto).
