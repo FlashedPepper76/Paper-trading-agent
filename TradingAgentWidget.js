@@ -140,6 +140,17 @@ async function loadLatestDecision(agentId) {
   return decisions && decisions[0];
 }
 
+// agent_account_state — the dashboard reads this for the live equity display
+// (updated by the equity refresher independently of agent runs).
+async function loadAccountState(agentId) {
+  const rows = await supabaseGet("agent_account_state", {
+    select:   "equity,cash,num_open_positions,updated_at",
+    agent_id: `eq.${agentId}`,
+    limit:    "1",
+  });
+  return rows && rows[0];
+}
+
 // VTI from Supabase benchmark_prices (same source as the web dashboard).
 // Returns [{date: ISO-string, close: number}] sorted oldest → newest.
 async function loadBenchmarkPrices(startDate) {
@@ -393,11 +404,13 @@ async function buildSingleAgentWidget(w, agentId, family) {
 // ── Comparison view ───────────────────────────────────────────────────────────
 
 async function buildComparisonWidget(w, family) {
-  const historyLimit = 2000;
+  // 500 matches the dashboard's getRuns(500) so the % baseline is identical.
+  const historyLimit = 500;
 
   const [
     plutusRun, heliosRun, hermesRun,
     plutusHistory, heliosHistory, hermesHistory,
+    plutusState, heliosState, hermesState,
   ] = await Promise.all([
     loadLatestRun("plutus"),
     loadLatestRun("helios"),
@@ -405,6 +418,9 @@ async function buildComparisonWidget(w, family) {
     loadEquityHistory("plutus",  historyLimit),
     loadEquityHistory("helios",  historyLimit),
     loadEquityHistory("hermes",  historyLimit),
+    loadAccountState("plutus"),
+    loadAccountState("helios"),
+    loadAccountState("hermes"),
   ]);
 
   addLabel(w, "PAPER TRADING · PLUTUS · HELIOS · HERMES", 9, new Color("#64748b"), true);
@@ -420,9 +436,8 @@ async function buildComparisonWidget(w, family) {
     return ((last - base) / base) * 100;
   }
 
-  function agentRow(agentId, run, changePct) {
-    const scale = AGENT_DISPLAY_SCALE[agentId] || 1;
-    const row   = w.addStack();
+  function agentRow(agentId, run, state, changePct) {
+    const row = w.addStack();
     row.centerAlignContent();
     const dot = row.addText("●");
     dot.font = Font.boldSystemFont(11);
@@ -430,17 +445,18 @@ async function buildComparisonWidget(w, family) {
     row.addSpacer(4);
     addLabel(row, AGENT_LABELS[agentId], 12, Color.white(), true);
     row.addSpacer();
-    const equity = run ? run.account_equity * scale : null;
-    addLabel(row, fmtMoney(equity),   12, new Color("#cbd5e1"), false);
+    // Prefer account_state equity (matches the dashboard's equity refresher source)
+    const rawEquity = state?.equity ?? (run ? run.account_equity : null);
+    addLabel(row, fmtMoney(rawEquity), 12, new Color("#cbd5e1"), false);
     row.addSpacer(8);
-    addLabel(row, fmtPct(changePct),  11, pctColor(changePct), true);
+    addLabel(row, fmtPct(changePct),   11, pctColor(changePct), true);
   }
 
-  agentRow("plutus", plutusRun, lastPct(plutusHistory));
+  agentRow("plutus", plutusRun, plutusState, lastPct(plutusHistory));
   w.addSpacer(2);
-  agentRow("helios", heliosRun, lastPct(heliosHistory));
+  agentRow("helios", heliosRun, heliosState, lastPct(heliosHistory));
   w.addSpacer(2);
-  agentRow("hermes", hermesRun, lastPct(hermesHistory));
+  agentRow("hermes", hermesRun, hermesState, lastPct(hermesHistory));
 
   if (family === "small") return;
 
