@@ -39,7 +39,7 @@ const AGENT_COLORS = {
   hermes: new Color("#34d399"), // emerald green
 };
 const AGENT_LABELS       = { plutus: "Plutus", helios: "Helios", hermes: "Hermes" };
-const AGENT_DISPLAY_SCALE = { plutus: 1, helios: 1, hermes: 10 };
+const AGENT_DISPLAY_SCALE = { plutus: 1, helios: 1, hermes: 1 };
 
 const BENCHMARK_SYMBOL = "VTI";
 const BENCHMARK_COLOR  = new Color("#475569"); // darkest, dashed
