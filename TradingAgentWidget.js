@@ -528,7 +528,7 @@ async function buildWidget() {
   // Fire-and-forget update check: runs in parallel with data fetch so it
   // doesn't slow down the widget. Result is written to disk; takes effect
   // on the next refresh cycle.
-  checkForUpdate();
+  await checkForUpdate();
 
   const w = new ListWidget();
   w.backgroundColor = new Color("#0b1120");
