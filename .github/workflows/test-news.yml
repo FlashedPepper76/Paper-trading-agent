@@ -1,0 +1,33 @@
+name: Test Alpaca News API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch headlines with real keys
+        env:
+          AGENT_ID: plutus
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          PYTHONPATH=. python - << 'EOF'
+          import alpaca_client as ac
+          items = ac.fetch_news_headlines(["AAPL", "NVDA", "TSLA", "MSFT"], limit=6)
+          print(f"Got {len(items)} headlines:")
+          for n in items:
+              print(f"- [{n['created_at'][:16]}] ({','.join(n['symbols'][:3])}) {n['headline'][:100]} — {n['source']}")
+          assert len(items) > 0, "News API returned zero headlines — check keys/plan"
+          print("NEWS API TEST PASSED")
+          EOF
