@@ -1,12 +1,15 @@
 name: Hermes Trading Bot (news-catalyst / event-driven)
 
 on:
-  # Triggered every 15 minutes during market hours by a Supabase pg_cron job
-  # ('hermes-trigger') — see trade.yml for why this no longer uses GitHub's
-  # native `schedule:` trigger. Hermes runs at a 15-minute cadence (vs.
-  # Plutus's per-minute cadence) since its news-catalyst strategy doesn't
-  # benefit from ultra-high-frequency polling; a 15-minute window is enough
-  # to catch and act on breaking news without burning xAI Grok API quota.
+  # Triggered by a Supabase pg_cron job ('hermes-trigger') — see trade.yml
+  # for why this no longer uses GitHub's native `schedule:` trigger.
+  # Intended cadence is every 15 minutes during market hours, same as
+  # Plutus/Helios (see instructions_hermes.md and schedule.py); regardless
+  # of how often this external trigger actually fires, main.py itself now
+  # self-throttles real decision runs to ~15 minutes apart via
+  # ai_agent.should_throttle_cadence(), so a faster or misconfigured
+  # trigger can no longer burn through Gemini/Groq quota or cause
+  # more-frequent-than-intended trading.
   workflow_dispatch:
     inputs:
       source:

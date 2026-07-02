@@ -39,8 +39,9 @@ HELIOS_UNIVERSE = [
 # across sectors that react meaningfully to earnings, regulatory decisions,
 # macro data releases, and other discrete news catalysts. Takes short-to-medium
 # term positions (1-5 days typically) when fresh events create mis-pricing.
-# Uses xAI Grok with built-in web search — news context is the primary input,
-# price history is secondary. Starts at $10k (displayed as $100k equivalent).
+# Uses Gemini with Google Search grounding for news research (Groq-hosted
+# Llama-3.3-70b as fallback) — news context is the primary input, price
+# history is secondary. Starts at $10k (displayed as $100k equivalent).
 HERMES_UNIVERSE = [
     # Mega-cap tech (frequent earnings/product/regulatory news)
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",

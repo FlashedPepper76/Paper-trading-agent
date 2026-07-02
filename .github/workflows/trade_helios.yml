@@ -1,8 +1,13 @@
 name: Helios Trading Bot (long-horizon / capital preservation)
 
 on:
-  # Triggered once daily by a Supabase pg_cron job ('helios-trigger') — see
-  # trade.yml for why this no longer uses GitHub's native `schedule:` trigger.
+  # Triggered by a Supabase pg_cron job ('helios-trigger') — see trade.yml
+  # for why this no longer uses GitHub's native `schedule:` trigger.
+  # Intended cadence is every 15 minutes during market hours, same as
+  # Plutus/Hermes (see instructions_helios.md) — Helios moved off its
+  # original once-daily cadence on 2026-06-29. Regardless of how often
+  # this trigger actually fires, main.py self-throttles real decision runs
+  # to ~15 minutes apart via ai_agent.should_throttle_cadence().
   workflow_dispatch:
     inputs:
       source:
