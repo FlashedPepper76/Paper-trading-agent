@@ -396,7 +396,7 @@ async function buildComparisonWidget(w, family) {
     loadEquityHistory("hermes",  historyLimit),
   ]);
 
-  addLabel(w, "PAPER TRADING · PLUTUS · HELIOS · HERMES", 9, new Color("#64748b"), true);
+  addLabel(w, "PAPER TRADING · PLUTUS · HELIOS · HERMES · v2", 9, new Color("#64748b"), true);
   w.addSpacer(6);
 
   // ── Agent header rows ────────────────────────────────────────────────────────
