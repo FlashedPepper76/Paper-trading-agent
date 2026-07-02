@@ -24,9 +24,8 @@
 // same Supabase benchmark_prices table the dashboard uses, so the lines here
 // will match what you see on /compare exactly.
 //
-// Note: Hermes started at $10k (vs $100k for Plutus/Helios). Dollar amounts
-// for Hermes are scaled ×10 in the widget so all three agents are comparable
-// on screen. Return % is unaffected by the scale.
+// Note: Hermes runs on a $10k account (vs $100k for Plutus/Helios). All three
+// agents are compared on the chart as % return from their own starting equity.
 
 const SUPABASE_URL    = "https://edmysxanjsskjrdfkmaw.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkbXlzeGFuanNza2pyZGZrbWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0ODA3ODAsImV4cCI6MjA5ODA1Njc4MH0.gebHV4qcqPxdFAvwqEgtGKTS_u_PhzgznXqnEqXmBoA";
@@ -52,17 +51,29 @@ const agentFilter = args.widgetParameter ? args.widgetParameter.trim().toLowerCa
 
 async function checkForUpdate() {
   try {
+    // Prefer iCloud storage (most common Scriptable setup); fall back to local.
     let fm;
-    try { fm = FileManager.iCloud(); } catch (_) { fm = FileManager.local(); }
-    const selfPath = fm.joinPath(fm.documentsDirectory(), Script.name() + ".js");
+    let selfPath;
+    try {
+      fm = FileManager.iCloud();
+      selfPath = fm.joinPath(fm.documentsDirectory(), Script.name() + ".js");
+      // iCloud files must be explicitly downloaded before they can be read.
+      if (fm.fileExists(selfPath) && !fm.isFileDownloaded(selfPath)) {
+        await fm.downloadFileFromiCloud(selfPath);
+      }
+    } catch (_) {
+      fm = FileManager.local();
+      selfPath = fm.joinPath(fm.documentsDirectory(), Script.name() + ".js");
+    }
+
     const req = new Request(GITHUB_RAW_URL);
-    req.timeoutInterval = 6;
+    req.timeoutInterval = 8;
     const latest = await req.loadString();
-    if (!latest || latest.length < 200) return; // guard against empty/error responses
-    const current = fm.readString(selfPath);
+    if (!latest || latest.length < 200) return;
+
+    const current = fm.fileExists(selfPath) ? fm.readString(selfPath) : "";
     if (latest !== current) {
       fm.writeString(selfPath, latest);
-      // Next refresh will pick up the new version automatically.
     }
   } catch (_) {
     // Silent — never break the widget if GitHub is unreachable.
