@@ -14,39 +14,62 @@
 //      - "hermes"       → detailed single-agent view for Hermes
 // 5. Tap the widget to open your dashboard (set DASHBOARD_URL below).
 //
-// The comparison chart plots a dashed gray reference line for VTI (total
-// U.S. stock market) over the same calendar stretch as the agents' full run
-// history, so you can tell agent underperformance from a down market —
-// same approach as the web dashboard's /compare page.
+// AUTO-UPDATE: On every refresh this script fetches its latest version from
+// GitHub. If the file changed it is written to disk; the update takes effect
+// on the next widget refresh (no action required).
+//
+// CHART: The comparison chart uses the same day-slot xFrac system as the web
+// dashboard's /compare page: each calendar date gets equal horizontal width;
+// intraday runs are evenly spaced within their day-slot. VTI is read from the
+// same Supabase benchmark_prices table the dashboard uses, so the lines here
+// will match what you see on /compare exactly.
+//
 // Note: Hermes started at $10k (vs $100k for Plutus/Helios). Dollar amounts
 // for Hermes are scaled ×10 in the widget so all three agents are comparable
 // on screen. Return % is unaffected by the scale.
 
-const SUPABASE_URL = "https://edmysxanjsskjrdfkmaw.supabase.co";
+const SUPABASE_URL    = "https://edmysxanjsskjrdfkmaw.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkbXlzeGFuanNza2pyZGZrbWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0ODA3ODAsImV4cCI6MjA5ODA1Njc4MH0.gebHV4qcqPxdFAvwqEgtGKTS_u_PhzgznXqnEqXmBoA";
-const DASHBOARD_URL = "https://trading-agent-dashboard-mu.vercel.app";
+const DASHBOARD_URL   = "https://trading-agent-dashboard-mu.vercel.app";
+const GITHUB_RAW_URL  = "https://raw.githubusercontent.com/FlashedPepper76/Paper-trading-agent/main/TradingAgentWidget.js";
 
-// Three luminance levels for color-filter-safe readability, plus green for
-// Hermes which is distinct enough in both color and luminance from the others.
 const AGENT_COLORS = {
   plutus: new Color("#ffffff"), // white — brightest line
   helios: new Color("#9ca3af"), // mid-gray
   hermes: new Color("#34d399"), // emerald green
 };
-const AGENT_LABELS = { plutus: "Plutus", helios: "Helios", hermes: "Hermes" };
-// Hermes paper account is $10k; multiply by 10 for apples-to-apples display
-// alongside Plutus/Helios ($100k). % return is unaffected — scale it only
-// when showing raw dollar amounts (equity, cash).
+const AGENT_LABELS       = { plutus: "Plutus", helios: "Helios", hermes: "Hermes" };
 const AGENT_DISPLAY_SCALE = { plutus: 1, helios: 1, hermes: 10 };
 
-const BENCHMARK_SYMBOL = "VTI"; // total U.S. stock market, not just large-caps
-const BENCHMARK_COLOR = new Color("#475569"); // darkest of the three, dashed
+const BENCHMARK_SYMBOL = "VTI";
+const BENCHMARK_COLOR  = new Color("#475569"); // darkest, dashed
 
 const agentFilter = args.widgetParameter ? args.widgetParameter.trim().toLowerCase() : null;
 
-// --------------------------------------------------------------------------
-// Supabase helpers
-// --------------------------------------------------------------------------
+// ── Self-update from GitHub ───────────────────────────────────────────────────
+// Silently fetches the latest version from GitHub and writes it to disk if it
+// has changed. The update takes effect on the next widget refresh.
+
+async function checkForUpdate() {
+  try {
+    let fm;
+    try { fm = FileManager.iCloud(); } catch (_) { fm = FileManager.local(); }
+    const selfPath = fm.joinPath(fm.documentsDirectory(), Script.name() + ".js");
+    const req = new Request(GITHUB_RAW_URL);
+    req.timeoutInterval = 6;
+    const latest = await req.loadString();
+    if (!latest || latest.length < 200) return; // guard against empty/error responses
+    const current = fm.readString(selfPath);
+    if (latest !== current) {
+      fm.writeString(selfPath, latest);
+      // Next refresh will pick up the new version automatically.
+    }
+  } catch (_) {
+    // Silent — never break the widget if GitHub is unreachable.
+  }
+}
+
+// ── Supabase helpers ──────────────────────────────────────────────────────────
 
 function buildQuery(params) {
   return Object.entries(params)
@@ -55,13 +78,13 @@ function buildQuery(params) {
 }
 
 async function supabaseGet(table, params) {
-  const qs = buildQuery(params);
+  const qs  = buildQuery(params);
   const req = new Request(`${SUPABASE_URL}/rest/v1/${table}?${qs}`);
   req.headers = {
-    apikey: SUPABASE_ANON_KEY,
+    apikey:        SUPABASE_ANON_KEY,
     Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
   };
-  const json = await req.loadJSON();
+  const json   = await req.loadJSON();
   const status = req.response ? req.response.statusCode : null;
   if (status && status >= 400) {
     const msg = (json && (json.message || json.error || json.hint)) || JSON.stringify(json);
@@ -72,23 +95,21 @@ async function supabaseGet(table, params) {
 
 async function loadLatestRun(agentId) {
   const runs = await supabaseGet("trading_agent_runs", {
-    select: "*",
+    select:   "*",
     agent_id: `eq.${agentId}`,
-    order: "id.desc",
-    limit: "1",
+    order:    "id.desc",
+    limit:    "1",
   });
   return runs && runs[0];
 }
 
-// Returns [{ run_at, equity }, ...] oldest -> newest. limit is set high
-// enough upstream to cover the agent's entire run history, same as the
-// dashboard's compare page (getRuns(2000, ...)).
+// Returns [{run_at, equity}] oldest → newest.
 async function loadEquityHistory(agentId, limit) {
   const rows = await supabaseGet("trading_agent_runs", {
-    select: "id,account_equity,run_at",
+    select:   "id,account_equity,run_at",
     agent_id: `eq.${agentId}`,
-    order: "id.desc",
-    limit: String(limit),
+    order:    "id.desc",
+    limit:    String(limit),
   });
   return rows
     .filter((r) => r.account_equity != null)
@@ -100,101 +121,103 @@ async function loadLatestDecision(agentId) {
   const run = await loadLatestRun(agentId);
   if (!run) return null;
   const decisions = await supabaseGet("trading_agent_decisions", {
-    select: "*",
-    run_id: `eq.${run.id}`,
-    order: "id.desc",
-    limit: "1",
+    select:  "*",
+    run_id:  `eq.${run.id}`,
+    order:   "id.desc",
+    limit:   "1",
   });
   return decisions && decisions[0];
 }
 
-// --------------------------------------------------------------------------
-// Benchmark (total market) helpers — Yahoo's chart endpoint, no key needed
-// --------------------------------------------------------------------------
-
-// Yahoo only serves fine-grained intraday bars for recent history (5-minute
-// bars cover up to ~6 days, 30-minute up to ~55 days, hourly up to ~2
-// years). Pick the finest interval the range allows so the benchmark line
-// shows real intraday movement instead of a flat step between day closes.
-function pickInterval(period1Sec, period2Sec) {
-  const days = (period2Sec - period1Sec) / 86400;
-  if (days <= 6) return "5m";
-  if (days <= 55) return "30m";
-  if (days <= 700) return "60m";
-  return "1d";
+// VTI from Supabase benchmark_prices (same source as the web dashboard).
+// Returns [{date: ISO-string, close: number}] sorted oldest → newest.
+async function loadBenchmarkPrices(startDate) {
+  const rows = await supabaseGet("benchmark_prices", {
+    select:      "price_time,close",
+    symbol:      `eq.${BENCHMARK_SYMBOL}`,
+    price_time:  `gte.${startDate}`,
+    order:       "price_time.asc",
+    limit:       "10000",
+  });
+  return rows.map((r) => ({ date: r.price_time, close: r.close }));
 }
 
-async function fetchBenchmarkSeries(symbol, rangeStartMs, rangeEndMs) {
-  const period1 = Math.floor(rangeStartMs / 1000) - 86400;
-  const period2 = Math.floor(rangeEndMs / 1000);
+// ── Day-slot xFrac series builders ────────────────────────────────────────────
+//
+// This exactly mirrors the web dashboard's buildPerAgentPctSeries /
+// buildBenchmarkPctSeries from compare-helpers.tsx. Each calendar date in the
+// shared axis gets equal horizontal width (1/daySlotCount). Runs within a day
+// are evenly spaced by count within that slot. This eliminates the long
+// diagonal "straight lines" that appear in raw calendar-time xFrac when agents
+// don't run overnight — a 16-hour gap would otherwise span ~30% of the chart.
 
-  // ---- stooq.com (primary) ----
-  // Returns CSV: Date,Open,High,Low,Close,Volume — reliable from iOS.
-  try {
-    const fmt = (sec) => {
-      const d = new Date(sec * 1000);
-      return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,"0")}${String(d.getUTCDate()).padStart(2,"0")}`;
-    };
-    const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol.toLowerCase())}.us&d1=${fmt(period1)}&d2=${fmt(period2)}&i=d`;
-    const req = new Request(url);
-    req.headers = { "User-Agent": "Mozilla/5.0 (compatible; CommandDeckWidget/1.0)" };
-    const csv = await req.loadString();
-    if (csv && !csv.trim().startsWith("No data") && csv.trim().length > 20) {
-      const lines = csv.trim().split("\n");
-      const points = [];
-      for (const line of lines.slice(1)) {
-        const cols = line.split(",");
-        if (cols.length < 5) continue;
-        const t = new Date(cols[0].trim() + "T12:00:00Z").getTime();
-        const c = parseFloat(cols[4]);
-        if (!isNaN(t) && !isNaN(c)) points.push({ t, close: c });
-      }
-      if (points.length > 1) return points;
-    }
-  } catch (e) {
-    console.error("stooq fetch failed: " + e);
+// [{run_at, equity}] → [{xFrac, pct}]  (day-slot version)
+function buildPerAgentPctSeriesDaySlot(history, daySlotIndex, daySlotCount) {
+  if (!history.length) return [];
+  const chronological = history.filter((r) => r.equity != null);
+  const base = chronological[0]?.equity;
+  if (!base) return [];
+
+  // Group runs by calendar date
+  const byDate = new Map();
+  for (const r of chronological) {
+    const d = r.run_at.slice(0, 10);
+    if (!byDate.has(d)) byDate.set(d, []);
+    byDate.get(d).push(r);
   }
 
-  // ---- Yahoo Finance (fallback) ----
-  const interval = pickInterval(period1, period2);
-  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
-    try {
-      const url =
-        `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}` +
-        `?period1=${period1}&period2=${period2}&interval=${interval}&includePrePost=false`;
-      const req = new Request(url);
-      req.headers = {
-        "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
-          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        Accept: "application/json",
-      };
-      const json = await req.loadJSON();
-      const result = json && json.chart && json.chart.result && json.chart.result[0];
-      if (!result) continue;
-      const timestamps = result.timestamp || [];
-      const closes =
-        (result.indicators && result.indicators.quote &&
-         result.indicators.quote[0] && result.indicators.quote[0].close) || [];
-      const points = [];
-      for (let i = 0; i < timestamps.length; i++) {
-        const c = closes[i];
-        if (c != null) points.push({ t: timestamps[i] * 1000, close: c });
-      }
-      if (points.length > 1) return points;
-    } catch (e) {
-      console.error(`Yahoo ${host} failed: ${e}`);
-    }
+  const points = [];
+  for (const [dateStr, dateRuns] of byDate) {
+    const slotIdx = daySlotIndex[dateStr] ?? 0;
+    const n = dateRuns.length;
+    dateRuns.forEach((r, i) => {
+      const inSlotFrac = n > 1 ? i / (n - 1) : 0.5;
+      points.push({
+        xFrac: (slotIdx + inSlotFrac) / daySlotCount,
+        pct:   ((r.equity - base) / base) * 100,
+      });
+    });
   }
-  return [];
+  return points;
 }
 
-// --------------------------------------------------------------------------
-// Formatting helpers
-// --------------------------------------------------------------------------
+// [{date, close}] → [{xFrac, pct}]  (day-slot version, same logic as dashboard)
+function buildBenchmarkPctSeriesDaySlot(points, rangeStartMs, daySlotIndex, daySlotCount) {
+  if (!points.length) return [];
+  const sorted = points.slice().sort((a, b) => a.date.localeCompare(b.date));
+
+  // Anchor % to the first VTI price at/after the agents' start date
+  const rangeStartDate = new Date(rangeStartMs).toISOString().slice(0, 10);
+  const basePoint = sorted.find((p) => p.date.slice(0, 10) >= rangeStartDate) ?? sorted[0];
+  const base = basePoint.close;
+
+  const byDate = new Map();
+  for (const p of sorted) {
+    const d = p.date.slice(0, 10);
+    if (!byDate.has(d)) byDate.set(d, []);
+    byDate.get(d).push(p);
+  }
+
+  const result = [];
+  for (const [dateStr, dayPoints] of byDate) {
+    const slotIdx = daySlotIndex[dateStr];
+    if (slotIdx === undefined) continue; // outside agent date range
+    const n = dayPoints.length;
+    dayPoints.forEach((p, i) => {
+      const inSlotFrac = n > 1 ? i / (n - 1) : 0.5;
+      result.push({
+        xFrac: (slotIdx + inSlotFrac) / daySlotCount,
+        pct:   ((p.close - base) / base) * 100,
+      });
+    });
+  }
+  return result;
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
 
 function colorForAction(action) {
-  if (action === "buy") return new Color("#4ade80");
+  if (action === "buy")  return new Color("#4ade80");
   if (action === "sell") return new Color("#f87171");
   return new Color("#94a3b8");
 }
@@ -222,50 +245,13 @@ function addLabel(stack, text, size, color, bold) {
   return t;
 }
 
-// --------------------------------------------------------------------------
-// Chart drawing
-// --------------------------------------------------------------------------
+// ── Chart drawing ─────────────────────────────────────────────────────────────
 //
-// Every series is plotted off its own list of { xFrac, pct } points, where
-// xFrac (0..1) is each point's horizontal position. Agent series get an
-// index-based xFrac (their own run history, oldest -> newest, no calendar
-// alignment between agents — same as before). The benchmark series gets a
-// calendar-time-based xFrac instead, since it has one point per
-// interval-bar rather than one per agent run. Drawing everything off xFrac
-// lets all three lines share one chart without the renderer needing to
-// know which kind of series it's looking at.
+// All series share the same [{xFrac, pct}] format so the renderer doesn't
+// need to know whether a series is an agent or the benchmark. Scriptable has
+// no native dash-pattern support, so the dashed benchmark line is built by
+// hand: alternate short runs of segments and gaps within a single Path.
 
-// equity history ([{run_at, equity}], oldest -> newest) -> [{xFrac, pct}]
-function toPctXFracSeries(history) {
-  if (!history.length) return [];
-  const base = history[0].equity;
-  if (!base) return [];
-  const n = history.length;
-  return history.map((h, i) => ({
-    xFrac: n > 1 ? i / (n - 1) : 0.5,
-    pct: ((h.equity - base) / base) * 100,
-  }));
-}
-
-// raw benchmark points ([{t, close}]) -> [{xFrac, pct}], xFrac by calendar
-// time within [rangeStartMs, rangeEndMs].
-function toBenchmarkXFracSeries(points, rangeStartMs, rangeEndMs) {
-  if (!points.length) return [];
-  const sorted = points.slice().sort((a, b) => a.t - b.t);
-  const base = sorted[0].close;
-  const span = rangeEndMs - rangeStartMs || 1;
-  return sorted.map((p) => ({
-    xFrac: Math.max(0, Math.min(1, (p.t - rangeStartMs) / span)),
-    pct: ((p.close - base) / base) * 100,
-  }));
-}
-
-// series: [{ points: [{xFrac, pct}], color, lineWidth?, dashed? }]
-//
-// Scriptable's DrawContext has no native dash-pattern support, so a dashed
-// line is built by hand: walk the point list and only draw every other
-// short run of segments, leaving gaps in between (a single Path can hold
-// multiple disconnected move/addLine runs — stroking it draws them all).
 function drawComparisonChart(series, width, height) {
   const ctx = new DrawContext();
   ctx.size = new Size(width, height);
@@ -274,17 +260,13 @@ function drawComparisonChart(series, width, height) {
 
   const all = series.flatMap((s) => s.points.map((p) => p.pct));
   if (!all.length) return null;
-  const min = Math.min(0, ...all);
-  const max = Math.max(0, ...all);
+  const min   = Math.min(0, ...all);
+  const max   = Math.max(0, ...all);
   const range = max - min || 1;
-  const pad = 4;
+  const pad   = 4;
 
-  function toY(v) {
-    return height - pad - ((v - min) / range) * (height - pad * 2);
-  }
-  function toX(xFrac) {
-    return pad + xFrac * (width - pad * 2);
-  }
+  function toY(v)    { return height - pad - ((v - min) / range) * (height - pad * 2); }
+  function toX(xFrac) { return pad + xFrac * (width - pad * 2); }
 
   // zero line
   const zeroPath = new Path();
@@ -303,11 +285,9 @@ function drawComparisonChart(series, width, height) {
       path.move(screenPts[0]);
       for (let i = 1; i < screenPts.length; i++) path.addLine(screenPts[i]);
     } else {
-      const onSegments = 2;
-      const offSegments = 2;
-      const cycle = onSegments + offSegments;
+      const on = 2, off = 2, cycle = on + off;
       for (let i = 0; i < screenPts.length - 1; i++) {
-        if (i % cycle < onSegments) {
+        if (i % cycle < on) {
           path.move(screenPts[i]);
           path.addLine(screenPts[i + 1]);
         }
@@ -319,7 +299,7 @@ function drawComparisonChart(series, width, height) {
     ctx.strokePath();
   }
 
-  // benchmark drawn first so the agent lines sit on top of it
+  // Benchmark drawn first so agent lines sit on top
   for (const s of series) {
     plotSeries(s.points, s.color, s.lineWidth || 2, !!s.dashed);
   }
@@ -327,22 +307,20 @@ function drawComparisonChart(series, width, height) {
   return ctx.getImage();
 }
 
-// --------------------------------------------------------------------------
-// Single-agent detailed view (unchanged from before)
-// --------------------------------------------------------------------------
+// ── Single-agent detailed view ────────────────────────────────────────────────
 
 async function buildSingleAgentWidget(w, agentId, family) {
   const scale = AGENT_DISPLAY_SCALE[agentId] || 1;
-  const run = await loadLatestRun(agentId);
+  const run   = await loadLatestRun(agentId);
   if (!run) {
     addLabel(w, `No runs logged for ${agentId}`, 13, Color.white(), false);
     return;
   }
   const decisions = await supabaseGet("trading_agent_decisions", {
-    select: "*",
-    run_id: `eq.${run.id}`,
-    order: "id.desc",
-    limit: "6",
+    select:  "*",
+    run_id:  `eq.${run.id}`,
+    order:   "id.desc",
+    limit:   "6",
   });
 
   const header = w.addStack();
@@ -401,12 +379,9 @@ async function buildSingleAgentWidget(w, agentId, family) {
   }
 }
 
-// --------------------------------------------------------------------------
-// Dual-agent comparison view
-// --------------------------------------------------------------------------
+// ── Comparison view ───────────────────────────────────────────────────────────
 
 async function buildComparisonWidget(w, family) {
-  // Full run history — same as the web dashboard's /compare page.
   const historyLimit = 2000;
 
   const [
@@ -416,25 +391,27 @@ async function buildComparisonWidget(w, family) {
     loadLatestRun("plutus"),
     loadLatestRun("helios"),
     loadLatestRun("hermes"),
-    loadEquityHistory("plutus", historyLimit),
-    loadEquityHistory("helios", historyLimit),
-    loadEquityHistory("hermes", historyLimit),
+    loadEquityHistory("plutus",  historyLimit),
+    loadEquityHistory("helios",  historyLimit),
+    loadEquityHistory("hermes",  historyLimit),
   ]);
-
-  const plutusPct  = toPctXFracSeries(plutusHistory);
-  const heliosPct  = toPctXFracSeries(heliosHistory);
-  const hermesPct  = toPctXFracSeries(hermesHistory);
-  const plutusChange = plutusPct.length  ? plutusPct[plutusPct.length - 1].pct   : null;
-  const heliosChange = heliosPct.length  ? heliosPct[heliosPct.length - 1].pct   : null;
-  const hermesChange = hermesPct.length  ? hermesPct[hermesPct.length - 1].pct   : null;
 
   addLabel(w, "PAPER TRADING · PLUTUS · HELIOS · HERMES", 9, new Color("#64748b"), true);
   w.addSpacer(6);
 
-  // agentRow: scale is applied only to the dollar display, not the % return.
+  // ── Agent header rows ────────────────────────────────────────────────────────
+  // % here is all-time: (latest equity - first equity) / first equity.
+  // This matches the "Since first log" tab total return on the dashboard.
+  function lastPct(history) {
+    const base = history[0]?.equity;
+    const last = history[history.length - 1]?.equity;
+    if (!base || !last) return null;
+    return ((last - base) / base) * 100;
+  }
+
   function agentRow(agentId, run, changePct) {
     const scale = AGENT_DISPLAY_SCALE[agentId] || 1;
-    const row = w.addStack();
+    const row   = w.addStack();
     row.centerAlignContent();
     const dot = row.addText("●");
     dot.font = Font.boldSystemFont(11);
@@ -443,68 +420,85 @@ async function buildComparisonWidget(w, family) {
     addLabel(row, AGENT_LABELS[agentId], 12, Color.white(), true);
     row.addSpacer();
     const equity = run ? run.account_equity * scale : null;
-    addLabel(row, fmtMoney(equity), 12, new Color("#cbd5e1"), false);
+    addLabel(row, fmtMoney(equity),   12, new Color("#cbd5e1"), false);
     row.addSpacer(8);
-    addLabel(row, fmtPct(changePct), 11, pctColor(changePct), true);
+    addLabel(row, fmtPct(changePct),  11, pctColor(changePct), true);
   }
 
-  agentRow("plutus", plutusRun,  plutusChange);
+  agentRow("plutus", plutusRun, lastPct(plutusHistory));
   w.addSpacer(2);
-  agentRow("helios", heliosRun,  heliosChange);
+  agentRow("helios", heliosRun, lastPct(heliosHistory));
   w.addSpacer(2);
-  agentRow("hermes", hermesRun,  hermesChange);
+  agentRow("hermes", hermesRun, lastPct(hermesHistory));
 
-  if (family !== "small") {
-    w.addSpacer(6);
+  if (family === "small") return;
 
-    // VTI date range anchored to established agents (50+ runs) so a brand-new
-    // agent doesn't shift the benchmark start to today. All agents are still
-    // drawn in the chart regardless of run count.
-    const MIN_BENCHMARK_RUNS = 50;
-    const anchorHistories = [plutusHistory, heliosHistory, hermesHistory]
-      .filter((h) => h.length >= MIN_BENCHMARK_RUNS);
-    const rangeSource = anchorHistories.length ? anchorHistories : [plutusHistory, heliosHistory, hermesHistory];
-    const allTimes = rangeSource
-      .flatMap((h) => h.map((r) => new Date(r.run_at).getTime()))
-      .filter((t) => !isNaN(t));
-    const rangeStartMs = allTimes.length
-      ? Math.min(...allTimes)
-      : Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const rangeEndMs = Date.now();
+  // ── Chart (medium / large) ───────────────────────────────────────────────────
 
-    let benchmarkPct = [];
-    try {
-      const raw = await fetchBenchmarkSeries(BENCHMARK_SYMBOL, rangeStartMs, rangeEndMs);
-      benchmarkPct = toBenchmarkXFracSeries(raw, rangeStartMs, rangeEndMs);
-    } catch (e) {
-      console.error("benchmark fetch failed: " + e);
-      benchmarkPct = [];
-    }
+  w.addSpacer(6);
 
-    const chartWidth  = family === "large" ? 290 : 260;
-    const chartHeight = family === "large" ? 80  : 48;
+  // Date range — anchor to agents with meaningful history so a new agent
+  // doesn't pull the VTI start date forward to today.
+  const MIN_BENCHMARK_RUNS = 50;
+  const allHistories = [plutusHistory, heliosHistory, hermesHistory];
+  const anchorHistories = allHistories.filter((h) => h.length >= MIN_BENCHMARK_RUNS);
+  const rangeSource = anchorHistories.length ? anchorHistories : allHistories;
+  const allTimes = rangeSource
+    .flatMap((h) => h.map((r) => new Date(r.run_at).getTime()))
+    .filter((t) => !isNaN(t));
+  const rangeStartMs   = allTimes.length ? Math.min(...allTimes) : Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const rangeStartDate = new Date(rangeStartMs).toISOString().slice(0, 10);
 
-    const series = [];
-    if (benchmarkPct.length >= 2) {
-      series.push({ points: benchmarkPct, color: BENCHMARK_COLOR, lineWidth: 1.5, dashed: true });
-    }
-    if (plutusPct.length >= 2) series.push({ points: plutusPct, color: AGENT_COLORS.plutus, lineWidth: 2 });
-    if (heliosPct.length >= 2) series.push({ points: heliosPct, color: AGENT_COLORS.helios, lineWidth: 2 });
-    if (hermesPct.length >= 2) series.push({ points: hermesPct, color: AGENT_COLORS.hermes, lineWidth: 2 });
-
-    const image = drawComparisonChart(series, chartWidth, chartHeight);
-    if (image) {
-      const iw = w.addImage(image);
-      iw.imageSize = new Size(chartWidth, chartHeight);
-    }
-    const caption = w.addText(
-      "white=Plutus  gray=Helios  green=Hermes" +
-      (benchmarkPct.length >= 2 ? "  dashed=VTI" : "")
-    );
-    caption.font = Font.systemFont(8);
-    caption.textColor = new Color("#475569");
+  // VTI from Supabase (same source as the web dashboard)
+  let rawVTI = [];
+  try {
+    rawVTI = await loadBenchmarkPrices(rangeStartDate);
+  } catch (e) {
+    console.error("Supabase VTI fetch failed: " + e);
   }
 
+  // Build shared day-slot index — each unique calendar date that appears in
+  // any agent's run history or VTI data gets one slot with equal width.
+  const allDateStrs = new Set();
+  for (const history of allHistories) {
+    for (const r of history) if (r.equity != null) allDateStrs.add(r.run_at.slice(0, 10));
+  }
+  for (const p of rawVTI) allDateStrs.add(p.date.slice(0, 10));
+  const daySlots     = Array.from(allDateStrs).sort();
+  const daySlotIndex = Object.fromEntries(daySlots.map((d, i) => [d, i]));
+  const daySlotCount = daySlots.length || 1;
+
+  // Build series using day-slot xFrac — exactly as the dashboard does
+  const plutusPct    = buildPerAgentPctSeriesDaySlot(plutusHistory,  daySlotIndex, daySlotCount);
+  const heliosPct    = buildPerAgentPctSeriesDaySlot(heliosHistory,  daySlotIndex, daySlotCount);
+  const hermesPct    = buildPerAgentPctSeriesDaySlot(hermesHistory,  daySlotIndex, daySlotCount);
+  const benchmarkPct = buildBenchmarkPctSeriesDaySlot(rawVTI, rangeStartMs, daySlotIndex, daySlotCount);
+
+  const chartWidth  = family === "large" ? 290 : 260;
+  const chartHeight = family === "large" ? 80  : 48;
+
+  const series = [];
+  if (benchmarkPct.length >= 2) {
+    series.push({ points: benchmarkPct, color: BENCHMARK_COLOR, lineWidth: 1.5, dashed: true });
+  }
+  if (plutusPct.length >= 2) series.push({ points: plutusPct, color: AGENT_COLORS.plutus, lineWidth: 2 });
+  if (heliosPct.length >= 2) series.push({ points: heliosPct, color: AGENT_COLORS.helios, lineWidth: 2 });
+  if (hermesPct.length >= 2) series.push({ points: hermesPct, color: AGENT_COLORS.hermes, lineWidth: 2 });
+
+  const image = drawComparisonChart(series, chartWidth, chartHeight);
+  if (image) {
+    const iw = w.addImage(image);
+    iw.imageSize = new Size(chartWidth, chartHeight);
+  }
+
+  const caption = w.addText(
+    "white=Plutus  gray=Helios  green=Hermes" +
+    (benchmarkPct.length >= 2 ? "  dashed=VTI" : "")
+  );
+  caption.font      = Font.systemFont(8);
+  caption.textColor = new Color("#475569");
+
+  // Latest decisions (large only)
   if (family === "large") {
     w.addSpacer(6);
     const [plutusDecision, heliosDecision, hermesDecision] = await Promise.all([
@@ -528,11 +522,14 @@ async function buildComparisonWidget(w, family) {
   }
 }
 
-// --------------------------------------------------------------------------
-// Entry point
-// --------------------------------------------------------------------------
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 async function buildWidget() {
+  // Fire-and-forget update check: runs in parallel with data fetch so it
+  // doesn't slow down the widget. Result is written to disk; takes effect
+  // on the next refresh cycle.
+  checkForUpdate();
+
   const w = new ListWidget();
   w.backgroundColor = new Color("#0b1120");
   w.setPadding(14, 14, 14, 14);
@@ -548,9 +545,9 @@ async function buildWidget() {
     }
   } catch (e) {
     console.error(e);
-    addLabel(w, "Supabase error:", 12, new Color("#f87171"), true);
+    addLabel(w, "Error:", 12, new Color("#f87171"), true);
     const errText = w.addText(String(e.message || e));
-    errText.font = Font.systemFont(10);
+    errText.font      = Font.systemFont(10);
     errText.textColor = new Color("#f87171");
     errText.lineLimit = 5;
   }
