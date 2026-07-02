@@ -27,6 +27,46 @@ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 
+def fetch_news_headlines(symbols: list[str], limit: int = 18) -> list[dict]:
+    """
+    Real headlines from Alpaca's News API (Benzinga-sourced) for the given
+    symbols, most recent first. Uses the same API keys as trading. Returns a
+    list of {headline, source, symbols, created_at} dicts; empty list on any
+    failure — news is a nice-to-have, never a reason to stop a run.
+    """
+    import requests
+    try:
+        resp = requests.get(
+            "https://data.alpaca.markets/v1beta1/news",
+            headers={
+                "APCA-API-KEY-ID": API_KEY,
+                "APCA-API-SECRET-KEY": SECRET_KEY,
+            },
+            params={
+                "symbols": ",".join(symbols),
+                "limit": limit,
+                "include_content": "false",
+                "exclude_contentless": "true",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("news", [])
+        return [
+            {
+                "headline": n.get("headline", ""),
+                "source": n.get("source", ""),
+                "symbols": n.get("symbols", []),
+                "created_at": n.get("created_at", ""),
+            }
+            for n in items
+            if n.get("headline")
+        ]
+    except Exception as e:
+        print(f"Alpaca news fetch failed ({e}) — continuing without headlines.")
+        return []
+
+
 def is_market_open() -> bool:
     clock = trading_client.get_clock()
     return clock.is_open

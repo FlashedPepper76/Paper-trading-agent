@@ -472,6 +472,40 @@ def _fetch_reddit_posts() -> str:
     )
 
 
+def _trim_to_last_sentence(text: str) -> str:
+    """
+    Model output that hits its max-token limit gets cut mid-sentence
+    ("BAC: No"), which looks broken on the dashboard. If the text doesn't
+    end at a sentence/line boundary, trim back to the last complete one.
+    """
+    text = text.rstrip()
+    if not text or text[-1] in ".!?)":
+        return text
+    # Prefer cutting at the last completed line, then the last sentence end.
+    for sep in ("\n", ". "):
+        idx = text.rfind(sep)
+        if idx > len(text) * 0.5:  # only trim if we keep most of the content
+            return text[: idx + (1 if sep == ". " else 0)].rstrip()
+    return text
+
+
+def _fetch_headline_block() -> str:
+    """
+    Real, timestamped headlines for this agent's universe from Alpaca's News
+    API — grounds the research step in actual events instead of letting the
+    model fill a template. Empty string if nothing came back.
+    """
+    items = ac.fetch_news_headlines(config.AGENT["universe"])
+    if not items:
+        return ""
+    lines = []
+    for n in items:
+        syms = ",".join(n["symbols"][:4])
+        when = n["created_at"][:16].replace("T", " ")
+        lines.append(f"- [{when} UTC] ({syms}) {n['headline']} — {n['source']}")
+    return "Real recent headlines for the portfolio universe (Alpaca News API):\n" + "\n".join(lines)
+
+
 def _research_news_gemini() -> str:
     """News research via Gemini with google_search grounding (all Gemini-backed agents).
     For agents with reddit_subreddits configured (Hermes), Reddit hot posts are
@@ -489,32 +523,38 @@ def _research_news_gemini() -> str:
         "conflicts, trade policy\n"
         "- Broader societal or cultural trends that could shift consumer "
         "behavior, sentiment, or demand in specific sectors\n"
-        f"- Recent company-specific news for any of these tickers, if there is "
-        f"any: {symbols}\n\n"
+        f"- Company-specific news for tickers in this universe: {symbols}. "
+        "ONLY mention tickers that actually have notable news — never "
+        "enumerate tickers to say they have no news, and never write "
+        "per-ticker 'no news' lines. Silence about a ticker means nothing "
+        "notable.\n\n"
         "Stay strictly factual and neutral — describe events and their "
         "plausible market relevance only. Never state your own political "
         "opinion or take a side on a political issue. Write 200-300 words as "
         "short plain-text bullet-style lines (no markdown headers, no asterisks). "
-        "If nothing notable turned up in a section, say so in one line."
+        "End with a complete sentence — do not trail off."
     )
 
-    user_message = "Research current market-relevant news, politics, and societal trends now."
+    headline_block = _fetch_headline_block()
+    parts = []
     if reddit_block:
-        user_message = (
+        parts.append(
             "Here is real-time retail sentiment from Reddit trading communities "
-            "to factor into your research:\n\n"
-            + reddit_block
-            + "\nNow research current market-relevant news, politics, and societal trends."
+            "to factor into your research:\n\n" + reddit_block
         )
+    if headline_block:
+        parts.append(headline_block)
+    parts.append("Now research current market-relevant news, politics, and societal trends.")
+    user_message = "\n\n".join(parts)
 
     text = _gemini_generate(
         system_prompt,
         user_message,
         tools=[{"google_search": {}}],
         json_mode=False,
-        max_output_tokens=800,
+        max_output_tokens=1200,
     )
-    return text.strip()
+    return _trim_to_last_sentence(text)
 
 
 def _research_news_groq() -> str:
@@ -537,16 +577,28 @@ def _research_news_groq() -> str:
         "cycles, product launches) for companies in this universe\n"
         "- General sentiment context for high-beta growth vs. defensive names\n\n"
         "Be concise — 150-200 words, plain-text bullet-style lines. "
-        "Note that your knowledge has a training cutoff, so flag if something "
-        "may have evolved since then."
+        "Never enumerate tickers to say they have no news — only mention a "
+        "ticker if you have something concrete about it. "
+        "End with a complete sentence — do not trail off."
     )
+    # Groq has no live web search, so real headlines from Alpaca's News API
+    # are the model's only source of fresh, dated facts — lead with them.
+    headline_block = _fetch_headline_block()
+    user_message = "Provide a brief market context briefing for the tickers in my universe."
+    if headline_block:
+        user_message = (
+            headline_block
+            + "\n\nUsing these real headlines as your primary source of fresh "
+            "information, provide a brief market context briefing for the "
+            "tickers in my universe. Cite the headline events you rely on."
+        )
     text = _groq_generate(
         system_prompt,
-        "Provide a brief market context briefing for the tickers in my universe.",
+        user_message,
         json_mode=False,
-        max_output_tokens=500,
+        max_output_tokens=700,
     )
-    return text.strip()
+    return _trim_to_last_sentence(text)
 
 
 def _research_news() -> str:
@@ -1133,6 +1185,55 @@ def log_idle(market_open: bool):
         print(f"Could not fetch account snapshot for idle check-in ({e}).")
         equity = cash = num_positions = None
 
+    # If the most recent logged run is already an idle check-in, UPDATE it
+    # in place (bumping run_at and a check-in counter) instead of inserting
+    # another row. A closed weekend used to produce dozens of identical
+    # "checked in, no action" entries; now it produces exactly one that
+    # stays fresh.
+    IDLE_PREFIX = "Market is closed — checked in, no action taken."
+    latest = None
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trading_agent_runs",
+            headers=_supabase_headers(),
+            params={
+                "agent_id": f"eq.{config.AGENT_ID}",
+                "select": "id,overall_reasoning,error",
+                "order": "run_at.desc",
+                "limit": "1",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        latest = rows[0] if rows else None
+    except Exception as e:
+        print(f"Could not check latest run before idle log ({e}) — will insert normally.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if latest and not latest.get("error") and (latest.get("overall_reasoning") or "").startswith(IDLE_PREFIX):
+        # Bump the existing idle row.
+        prev = latest["overall_reasoning"]
+        m = re.search(r"\((\d+) check-ins", prev)
+        count = (int(m.group(1)) if m else 1) + 1
+        try:
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/trading_agent_runs",
+                headers=_supabase_headers(),
+                params={"id": f"eq.{latest['id']}"},
+                json={
+                    "run_at": now_iso,
+                    "account_equity": equity,
+                    "account_cash": cash,
+                    "num_open_positions": num_positions,
+                    "overall_reasoning": f"{IDLE_PREFIX} ({count} check-ins this closed period, latest shown)",
+                },
+                timeout=15,
+            ).raise_for_status()
+            return
+        except Exception as e:
+            print(f"Could not update existing idle row ({e}) — falling back to insert.")
+
     payload = {
         "agent_id": config.AGENT_ID,
         "trigger": RUN_TRIGGER,
@@ -1140,7 +1241,7 @@ def log_idle(market_open: bool):
         "account_equity": equity,
         "account_cash": cash,
         "num_open_positions": num_positions,
-        "overall_reasoning": "Market is closed — checked in, no action taken.",
+        "overall_reasoning": IDLE_PREFIX,
         "model_used": None,
         "error": None,
         "news_context": None,
